@@ -1,0 +1,122 @@
+"""
+Paillier secret key that is shared amongst several parties.
+"""
+
+from typing import Dict
+
+from tno.mpc.encryption_schemes.paillier import PaillierCiphertext
+from tno.mpc.encryption_schemes.templates.asymmetric_encryption_scheme import SecretKey
+from tno.mpc.encryption_schemes.utils import mod_inv, pow_mod
+
+from .shamir_secret_sharing_integers import IntegerShares
+from .utils import mult_list
+
+
+class PaillierSharedKey(SecretKey):
+    """
+    Class containing relevant attributes and methods of a shared paillier key.
+    """
+
+    def __init__(
+        self, n: int, t: int, player_id: int, share: IntegerShares, theta: int
+    ):
+        super().__init__()
+        self.share = share
+        self.n = n
+        self.n_square = n * n
+        self.t = t
+        self.player_id = player_id
+        self.theta = theta
+
+    def partial_decrypt(self, ciphertext: PaillierCiphertext) -> int:
+        """
+        Function that does local computations to get a partial decryption of a ciphertext.
+
+        :param ciphertext: ciphertext to be partially decrypted
+        :raise TypeError: If the given ciphertext is not of type PaillierCiphertext.
+        :raise ValueError: If the ciphertext is encrypted against a different key.
+        :return: partial decryption of ctx
+        """
+
+        if not isinstance(ciphertext, PaillierCiphertext):
+            raise TypeError(
+                f"Expected ciphertext to be a PaillierCiphertext not: {type(ciphertext)}"
+            )
+
+        if self.n != ciphertext.scheme.public_key.n:
+            raise ValueError("encrypted against a different key!")
+        ciphertext_value = ciphertext.value
+        n_fac = self.share.n_fac
+        other_players = [i + 1 for i in range(self.share.n) if i + 1 != self.player_id]
+
+        # NB: Here the reconstruction set is implicit defined, but any
+        # large enough subset of shares will do.
+        # reconstruction_shares = {key: shares[key] for key in list(shares.keys())[:degree + 1]}
+
+        lagrange_interpol_enumerator = mult_list(other_players)
+        lagrange_interpol_denominator = mult_list(
+            [(j - self.player_id) for j in other_players]
+        )
+        exp = (
+            n_fac * lagrange_interpol_enumerator * self.share.shares[self.player_id]
+        ) // lagrange_interpol_denominator
+
+        # Notice that the partial decryption is already raised to the power given
+        # by the Lagrange interpolation coefficient
+        if exp < 0:
+            ciphertext_value = mod_inv(ciphertext_value, self.n_square)
+            exp = -exp
+        partial_decryption = pow_mod(ciphertext_value, exp, self.n_square)
+        return partial_decryption
+
+    def decrypt(self, partial_dict: Dict[int, int]) -> int:
+        r"""
+        Function that uses partial decryptions of other parties to reconstruct a
+        full decryption of the initial ciphertext.
+
+        :param partial_dict: dictionary containing the partial decryptions of each party
+        :raise ValueError: Either in case not enough shares are known in order to decrypt.
+            Or when the combined decryption minus one is not divisible by $N$. This last case is
+            most likely caused by the fact the ciphertext that is being decrypted,
+            differs between parties.
+        :return: full decryption
+        """
+
+        partial_decryptions = list(partial_dict.values())
+
+        if len(partial_decryptions) < self.share.degree + 1:
+            raise ValueError("Not enough shares.")
+
+        combined_decryption = (
+            mult_list(partial_decryptions[: self.share.degree + 1]) % self.n_square
+        )
+
+        if (combined_decryption - 1) % self.n != 0:
+            raise ValueError(
+                "Combined decryption minus one is not divisible by N. This might be caused by the "
+                "fact that the ciphertext that is being decrypted, differs between the parties."
+            )
+
+        message = (
+            (combined_decryption - 1) // self.n * mod_inv(self.theta, self.n)
+        ) % self.n
+
+        return message
+
+    def __str__(self) -> str:
+        """
+        Utility function to represent the local share of the private key as a string
+
+        :return: String representation of this private key part.
+        """
+        return str(
+            {
+                "priv_shared_key": {
+                    "n": self.n,
+                    "t": self.t,
+                    "player_id": self.player_id,
+                    "theta": self.theta,
+                    "share": self.share.serialize(),
+                }
+            }
+        )
