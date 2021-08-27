@@ -16,16 +16,17 @@ from .utils import mult_list
 
 class ShamirSecretSharingScheme:
     """
-    Class with Shamir Secret sharing functionality
+    Class with Shamir Secret sharing functionality.
     """
 
     def __init__(
         self, modulus: int, number_of_parties: int, polynomial_degree: int
     ) -> None:
-        """
-        Initialize a t-out-of-n secret sharing scheme where
-        - t = polynomial_degree + 1
-        - n = number_of_parties
+        r"""
+        Initialize a $t$-out-of-$n$ secret sharing scheme where
+
+        - $t$ = \text{polynomial_degree} + 1$
+        - $n$ = \text{number_of_parties}$
 
         Note that polynomial_degree is the same as the corruption threshold.
 
@@ -49,7 +50,7 @@ class ShamirSecretSharingScheme:
 
     def share_secret(self, secret: int) -> ShamirShares:
         """
-        Function that creates shares of a value for each party
+        Function that creates shares of a value for each party.
 
         :param secret: secret to be shared
         :return: sharing of the secret
@@ -77,6 +78,7 @@ class ShamirSecretSharingScheme:
     def __eq__(self, other: object) -> bool:
         """
         Compare equality between this ShamirSecretSharingScheme and the other object.
+
         :param other: Object to compare with.
         :return: Boolean stating (in)equality
         """
@@ -123,6 +125,7 @@ class ShamirShares:
     def __str__(self) -> str:
         """
         String formatted version of this ShamirShares object.
+
         :return: Pretty string.
         """
         if self.shares:

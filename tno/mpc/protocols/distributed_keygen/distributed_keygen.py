@@ -1,5 +1,5 @@
 """
-Code for a single player in the Paillier distributed key-generation protocol
+Code for a single player in the Paillier distributed key-generation protocol.
 """
 
 from __future__ import annotations
@@ -14,6 +14,7 @@ from random import randint
 from typing import Any, Dict, Iterable, List, Optional, Tuple, Union, cast
 
 import sympy
+
 from tno.mpc.communication import Serialization, SupportsSerialization
 from tno.mpc.communication.pool import Pool
 from tno.mpc.encryption_schemes.paillier import (
@@ -67,14 +68,13 @@ class DistributedPaillier(Paillier, SupportsSerialization):
 
         :param precision: precision of the fixed point encoding in Paillier
         :param pool: The network of involved parties
-        :param corruption_threshold: Maximum number of allowed corruptions. we require for the
+        :param corruption_threshold: Maximum number of allowed corruptions. We require for the
             number of parties in the pool and the corruption threshold that
-            number_of_parties >= 2 * corruption_threshold + 1.
+            $$\text{number_of_parties} >= 2 * \text{corruption_threshold} + 1$$.
             This is because we need to multiply secret sharings that both use polynomials of
             degree corruption_threshold. The resulting secret sharing then becomes a polynomial
-            of degree 2*corruption_threshold and it requires at least 2*corruption_threshold+1
-            evaluation points to reconstruct the
-            secret in that sharing.
+            of degree $2*\text{corruption_threshold}$ and it requires at least $2*text{corruption_threshold}+1$
+            evaluation points to reconstruct the secret in that sharing.
         :param key_length: desired bit length of the modulus $N$
         :param prime_threshold: Upper bound on the number of prime numbers to check during
             primality tests
@@ -178,6 +178,24 @@ class DistributedPaillier(Paillier, SupportsSerialization):
         distributed: bool,
         **kwargs: Any,
     ) -> None:
+        """
+        Initializes a DistributedPaillier instance with a public Paillier key and a shared
+        secret Paillier key.
+
+        :param public_key: The Paillier public key
+        :param secret_key: The shared secret Paillier key
+        :param precision: The precision of the resulting scheme
+        :param pool: The pool with connections of parties involved in the shared secret key
+        :param index: The index of the party who owns this instance within the pool
+        :param party_indices: Dictionary mapping parties in the pool to their indices
+        :param shares: Data class that stores and keeps track of shares during decryption
+        :param session_id: The unique session identifier belonging to the protocol that generated
+            the keys for this DistributedPaillier scheme.
+        :param distributed: Boolean value indicating whether the protocol that generated the keys
+            for this DistributedPaillier scheme was run in different Python instances (True) or in a
+            single python instance (False)
+        :param kwargs: Any keyword arguments that are passed to the super __init__ function
+        """
         super().__init__(
             public_key, cast(PaillierSecretKey, secret_key), precision, False, **kwargs
         )
@@ -550,14 +568,14 @@ class DistributedPaillier(Paillier, SupportsSerialization):
         :param corruption_threshold: number of parties that are allowed to be corrupted
         :param shares: dictionary that keeps track of shares for parties for certain numbers
         :param index: index of this party
-        :param zero_share: A secret sharing of 0 in a 2t-out-of-n shamir secret sharing scheme
+        :param zero_share: A secret sharing of $0$ in a $2t$-out-of-$n$ shamir secret sharing scheme
         :param pool: network of involved parties
         :param prime_list: list of prime numbers
-        :param prime_length: desired bit length of p and q
+        :param prime_length: desired bit length of $p$ and $q$
         :param party_indices: mapping from party names to indices
         :param correct_param_biprime: correctness parameter that affects the certainty that the
-            generated N is a product of two primes
-        :param shamir_scheme: t-out-of-n Shamir secret sharing scheme
+            generated $N$ is a product of two primes
+        :param shamir_scheme: $t$-out-of-$n$ Shamir secret sharing scheme
         :return: regular Paillier public key and a shared secret key
         """
         secret_key = await cls.generate_secret_key(
@@ -591,15 +609,15 @@ class DistributedPaillier(Paillier, SupportsSerialization):
         shamir_scheme: Shamir,
     ) -> Tuple[ShamirShares, ShamirShares]:
         """ "
-        Function to generate primes p and q
+        Function to generate primes $p$ and $q$
 
         :param shares: dictionary that keeps track of shares for parties for certain numbers
         :param pool: network of involved parties
         :param index: index of this party
-        :param prime_length: desired bit length of p and q
+        :param prime_length: desired bit length of $p$ and $q$
         :param party_indices: mapping from party names to indices
-        :param shamir_scheme: t-out-of-n Shamir secret sharing scheme
-        :return: sharings of p and q
+        :param shamir_scheme: $t$-out-of-$n$ Shamir secret sharing scheme
+        :return: sharings of $p$ and $q$
         """
         shares.p.additive = cls.generate_prime_additive_share(index, prime_length)
         cls.shamir_share_and_send(
@@ -617,17 +635,17 @@ class DistributedPaillier(Paillier, SupportsSerialization):
 
     @classmethod
     def generate_prime_additive_share(cls, index: int, prime_length: int) -> int:
-        """
-        Generate a random value between 2^(length-1) and 2^length.
+        r"""
+        Generate a random value between $2^(\text{length}-1)$ and 2^\text{length}.
         the function will ensure that the random
-        value is equal to 3 mod 4 for the fist player, and to 0 mod 4 for all
+        value is equal to $3 \mod 4$ for the fist player, and to $0 \mod 4$ for all
         other players.
-        This is necessary to generate additive shares of p and q, or the
+        This is necessary to generate additive shares of $p$ and $q$, or the
         bi-primality test will not work.
 
         :param index: index of this party
-        :param prime_length: desired bit length of primes p and q
-        :return: a random integer of the desired bit length and value modulo 4
+        :param prime_length: desired bit length of primes $p$ and $q$
+        :return: a random integer of the desired bit length and value modulo $4$
         """
         if index == 1:
             mod4 = 3
@@ -654,7 +672,7 @@ class DistributedPaillier(Paillier, SupportsSerialization):
 
         :param content: string identifying the number to be shared and sent
         :param shares: dictionary keeping track of shares for different parties and numbers
-        :param shamir_scheme: t-out-of-n Shamir secret sharing scheme
+        :param shamir_scheme: $t$-out-of-$n$ Shamir secret sharing scheme
         :param index: index of this party
         :param pool: network of involved parties
         :param party_indices: mapping from party names to indices
@@ -738,7 +756,7 @@ class DistributedPaillier(Paillier, SupportsSerialization):
         :param content: string identifying the number to be retrieved
         :param shares: dictionary keeping track of shares for different parties and numbers
         :param index: index of this party
-        :param shamir_scheme: t-out-of-n Shamir secret sharing
+        :param shamir_scheme: $t$-out-of-$n$ Shamir secret sharing
         :return: sum of all the shares for the number identified by content
         """
 
@@ -760,8 +778,7 @@ class DistributedPaillier(Paillier, SupportsSerialization):
         corruption_threshold: int,
     ) -> IntegerShares:
         """
-        Fetch shares labeled with content and add them to
-        own_share_value.
+        Fetch shares labeled with content and add them to own_share_value.
 
         :param content: string identifying the number to be retrieved
         :param int_shamir_scheme: Shamir secret sharing scheme over the integers
@@ -789,7 +806,7 @@ class DistributedPaillier(Paillier, SupportsSerialization):
         Function to test whether a certain primality check holds
 
         :param shares: dictionary keeping track of shares for a certain value
-        :param modulus: value of N
+        :param modulus: value of $N$
         :return: true if the biprimality tests succeeds and false if it fails
         """
         product = 1
@@ -864,12 +881,12 @@ class DistributedPaillier(Paillier, SupportsSerialization):
         party_indices: Dict[str, int],
     ) -> bool:
         """
-        Function to test for biprimality of N
+        Function to test for biprimality of $N$
 
         :param correct_param_biprime: correctness parameter that affects the certainty that the
             generated modulus is biprime
         :param shares: dictionary keeping track of shares for different parties for certain numbers
-        :param modulus: the modulus N
+        :param modulus: the modulus $N$
         :param pool: network of involved parties
         :param index: index of this party
         :param party_indices: mapping from party name to indices
@@ -924,7 +941,7 @@ class DistributedPaillier(Paillier, SupportsSerialization):
         Function to generate an additive share of lambda
 
         :param index: index of this party
-        :param modulus: modulus N
+        :param modulus: modulus $N$
         :param shares: dictionary keeping track of shares for different parties for certain numbers
         :return: additive share of lambda
         """
@@ -936,11 +953,11 @@ class DistributedPaillier(Paillier, SupportsSerialization):
     @classmethod
     def __small_prime_divisors_test(cls, prime_list: List[int], modulus: int) -> bool:
         """
-        Function to test N for small prime divisors
+        Function to test $N$ for small prime divisors
 
         :param prime_list: list of prime numbers
-        :param modulus: modulus N
-        :return: true if N has small divisors and false otherwise
+        :param modulus: modulus $N$
+        :return: true if $N$ has small divisors and false otherwise
         """
         for prime in prime_list:
             if modulus % prime == 0:
@@ -960,22 +977,22 @@ class DistributedPaillier(Paillier, SupportsSerialization):
         shamir_scheme: Shamir,
         correct_param_biprime: int,
     ) -> int:
-        """
-        Function that starts a protocol to generate candidates for p and q
+        r"""
+        Function that starts a protocol to generate candidates for $p$ and $q$
         the multiplication of the two is then checked for biprimality to ensure it is a valid
         modulus. This is run until it succeeds.
 
         :param shares: dictionary that keeps track of shares for parties for certain numbers
-        :param zero_share: A secret sharing of 0 in a 2t-out-of-n shamir secret sharing scheme
+        :param zero_share: A secret sharing of $0$ in a $2t$-out-of-$n$ shamir secret sharing scheme
         :param index: index of this party
         :param pool: network of involved parties
         :param prime_list: list of prime numbers
         :param party_indices: mapping from party names to indices
-        :param prime_length: desired bit length of p and q
-        :param shamir_scheme: t-out-of-n Shamir secret sharing scheme
+        :param prime_length: desired bit length of $p$ and $q$
+        :param shamir_scheme: $t$-out-of-$n$ Shamir secret sharing scheme
         :param correct_param_biprime: correctness parameter that affects the certainty that the
-            generated N is a product of two primes
-        :return: modulus N
+            generated $N$ is a product of two primes
+        :return: modulus $N$
         """
 
         sp_err_counter = 0
@@ -1045,14 +1062,14 @@ class DistributedPaillier(Paillier, SupportsSerialization):
         :param corruption_threshold: Maximum number of allowed corruptions
         :param shares: dictionary that keeps track of shares for parties for certain numbers
         :param index: index of this party
-        :param zero_share: A secret sharing of 0 in a 2t-out-of-n shamir secret sharing scheme
+        :param zero_share: A secret sharing of $0$ in a $2t$-out-of-$n$ shamir secret sharing scheme
         :param pool: network of involved parties
         :param prime_list: list of prime numbers
-        :param prime_length: desired bit length of p and q
+        :param prime_length: desired bit length of $p$ and $q$
         :param party_indices: mapping from party names to indices
         :param correct_param_biprime: correctness parameter that affects the certainty that the
-            generated N is a product of two primes
-        :param shamir_scheme: t-out-of-n Shamir secret sharing scheme
+            generated $N$ is a product of two primes
+        :param shamir_scheme: $t$-out-of-$n$ Shamir secret sharing scheme
         :return: shared secret key
         """
         modulus = await cls.compute_modulus(

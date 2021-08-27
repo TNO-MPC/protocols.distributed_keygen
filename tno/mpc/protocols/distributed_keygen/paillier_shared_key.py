@@ -19,7 +19,17 @@ class PaillierSharedKey(SecretKey):
 
     def __init__(
         self, n: int, t: int, player_id: int, share: IntegerShares, theta: int
-    ):
+    ) -> None:
+        """
+        Initializes a Paillier shared key.
+
+        :param n: modulus of the DistributedPaillier scheme this secret key belongs to
+        :param t: corruption_threshold of the secret sharing
+        :param player_id: the index of the player to whom the key belongs
+        :param share: secret sharing of the exponent used during decryption
+        :param theta: Value used in the computation of a full decryption after partial decryptions
+            have been obtained. We refer to the paper for more details
+        """
         super().__init__()
         self.share = share
         self.n = n
@@ -35,7 +45,7 @@ class PaillierSharedKey(SecretKey):
         :param ciphertext: ciphertext to be partially decrypted
         :raise TypeError: If the given ciphertext is not of type PaillierCiphertext.
         :raise ValueError: If the ciphertext is encrypted against a different key.
-        :return: partial decryption of ctx
+        :return: partial decryption of ciphertext
         """
 
         if not isinstance(ciphertext, PaillierCiphertext):
@@ -105,7 +115,7 @@ class PaillierSharedKey(SecretKey):
 
     def __str__(self) -> str:
         """
-        Utility function to represent the local share of the private key as a string
+        Utility function to represent the local share of the private key as a string.
 
         :return: String representation of this private key part.
         """

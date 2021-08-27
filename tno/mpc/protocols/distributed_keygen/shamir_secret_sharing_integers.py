@@ -102,12 +102,12 @@ class ShamirSecretSharingIntegers:
 
 @dataclass
 class Shares:
-    """
-    Shares contains all shares of this party
-    shares.<element> contains an object for that element, such as "p" or "q"
-    these objects contain 2 entries: "additive" and "shares"
-    in "additive", the local additive share of that element is stored
-    in "shares", the shamir shares of the local additive share are stored
+    r"""
+    Shares contains all shares of this party.
+    Every subclass contains an object for that element, such as $p$ or $q$.
+    These objects contain up to two entries: "additive" and "shares",
+    in "additive", the local additive share of that element is stored,
+    in "shares", the shamir shares of the local additive share are stored.
     """
 
     @dataclass
@@ -137,7 +137,7 @@ class Shares:
     @dataclass
     class N:
         r"""
-        Shares of $n$
+        Shares of $n$.
         """
         shares: Dict[int, int] = field(default_factory=dict)
 
@@ -153,7 +153,7 @@ class Shares:
     @dataclass
     class V:
         r"""
-        Shares of $v$
+        Shares of $v$.
         """
         additive: int = 0
         shares: Dict[int, int] = field(default_factory=dict)
@@ -169,7 +169,7 @@ class Shares:
     @dataclass
     class Beta:
         r"""
-        Shares of $\beta$
+        Shares of $\beta$.
         """
         additive: int = 0
         shares: Dict[int, int] = field(default_factory=dict)
@@ -198,7 +198,7 @@ class Shares:
 
 class IntegerShares:
     """
-    Class that keeps track of the shares for a certain value that is secret shared over the integers
+    Class that keeps track of the shares for a certain value that is secret shared over the integers.
     """
 
     def __init__(

@@ -6,6 +6,7 @@ import asyncio
 from typing import List, Tuple, Union, cast
 
 import pytest
+
 from tno.mpc.communication import Pool
 from tno.mpc.communication.test import (  # pylint: disable=unused-import
     fixture_pool_http_3p,
