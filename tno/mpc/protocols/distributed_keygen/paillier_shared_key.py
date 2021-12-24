@@ -5,10 +5,10 @@ Paillier secret key that is shared amongst several parties.
 from typing import Dict
 
 from tno.mpc.encryption_schemes.paillier import PaillierCiphertext
+from tno.mpc.encryption_schemes.shamir import IntegerShares
 from tno.mpc.encryption_schemes.templates.asymmetric_encryption_scheme import SecretKey
 from tno.mpc.encryption_schemes.utils import mod_inv, pow_mod
 
-from .shamir_secret_sharing_integers import IntegerShares
 from .utils import mult_list
 
 
@@ -57,15 +57,17 @@ class PaillierSharedKey(SecretKey):
             raise ValueError("encrypted against a different key!")
         ciphertext_value = ciphertext.value
         n_fac = self.share.n_fac
-        other_players = [i + 1 for i in range(self.share.n) if i + 1 != self.player_id]
+        other_honest_players = [
+            i + 1 for i in range(self.share.degree + 1) if i + 1 != self.player_id
+        ]
 
         # NB: Here the reconstruction set is implicit defined, but any
         # large enough subset of shares will do.
         # reconstruction_shares = {key: shares[key] for key in list(shares.keys())[:degree + 1]}
 
-        lagrange_interpol_enumerator = mult_list(other_players)
+        lagrange_interpol_enumerator = mult_list(other_honest_players)
         lagrange_interpol_denominator = mult_list(
-            [(j - self.player_id) for j in other_players]
+            [(j - self.player_id) for j in other_honest_players]
         )
         exp = (
             n_fac * lagrange_interpol_enumerator * self.share.shares[self.player_id]
@@ -92,7 +94,9 @@ class PaillierSharedKey(SecretKey):
         :return: full decryption
         """
 
-        partial_decryptions = list(partial_dict.values())
+        partial_decryptions = [
+            partial_dict[i + 1] for i in range(self.share.degree + 1)
+        ]
 
         if len(partial_decryptions) < self.share.degree + 1:
             raise ValueError("Not enough shares.")

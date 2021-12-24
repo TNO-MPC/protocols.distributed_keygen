@@ -24,15 +24,16 @@ from tno.mpc.encryption_schemes.paillier import (
     PaillierSecretKey,
     paillier,
 )
+from tno.mpc.encryption_schemes.shamir import IntegerShares
+from tno.mpc.encryption_schemes.shamir import (
+    ShamirSecretSharingIntegers as IntegerShamir,
+)
+from tno.mpc.encryption_schemes.shamir import ShamirSecretSharingScheme as Shamir
+from tno.mpc.encryption_schemes.shamir import ShamirShares, Shares
 from tno.mpc.encryption_schemes.templates.encryption_scheme import EncodedPlaintext
 from tno.mpc.encryption_schemes.utils import pow_mod
 
 from .paillier_shared_key import PaillierSharedKey
-from .shamir_secret_sharing import ShamirSecretSharingScheme as Shamir
-from .shamir_secret_sharing import ShamirShares
-from .shamir_secret_sharing_integers import IntegerShares
-from .shamir_secret_sharing_integers import ShamirSecretSharingIntegers as IntegerShamir
-from .shamir_secret_sharing_integers import Shares
 
 
 class DistributedPaillier(Paillier, SupportsSerialization):
@@ -265,6 +266,7 @@ class DistributedPaillier(Paillier, SupportsSerialization):
             is "self".
         :return: The encoded plaintext corresponding to the ciphertext.
         """
+        receivers_without_self: Optional[List[str]]
         if receivers is not None:
             # If we are part of the receivers, we expect the other parties to send us partial
             # decryptions
@@ -272,14 +274,14 @@ class DistributedPaillier(Paillier, SupportsSerialization):
             # We will broadcast our partial decryption to all receivers, but we do not need to send
             # anything to ourselves.
             if self_receive:
-                receivers.remove("self")
+                receivers_without_self = [recv for recv in receivers if recv != "self"]
+            else:
+                receivers_without_self = receivers
         else:
             # If no receivers are specified, we assume everyone will receive the partial decryptions
             self_receive = True
+            receivers_without_self = receivers
 
-        receiver = "self" in receivers if receivers is not None else True
-        if receiver and receivers is not None:
-            receivers.remove("self")
         # generate the local partial decryption
         self.shares.partial_decryption.shares[self.index] = cast(
             PaillierSharedKey, self.secret_key
@@ -292,7 +294,7 @@ class DistributedPaillier(Paillier, SupportsSerialization):
                 "value": self.shares.partial_decryption.shares[self.index],
             },
             self.pool,
-            receivers=receivers,
+            receivers=receivers_without_self,
         )
         if self_receive:
             # receive the partial decryption from the other parties
