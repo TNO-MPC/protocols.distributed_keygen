@@ -69,8 +69,8 @@ async def fixture_distributed_schemes(
     :param request: Fixture request
     :return: a collection of schemes
     """
-    Serialization.new_serialization_funcs.pop("DistributedPaillier")
-    Serialization.new_deserialization_funcs.pop("DistributedPaillier")
+    Serialization.custom_serialization_funcs.pop("DistributedPaillier")
+    Serialization.custom_deserialization_funcs.pop("DistributedPaillier")
     Serialization.set_serialization_logic(DistributedPaillier, check_annotations=False)
     corruption_threshold: int = request.param  # type: ignore[attr-defined]
     key_length = 64

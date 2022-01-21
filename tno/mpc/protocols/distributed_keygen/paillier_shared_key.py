@@ -37,6 +37,7 @@ class PaillierSharedKey(SecretKey):
         self.t = t
         self.player_id = player_id
         self.theta = theta
+        self.theta_inv = mod_inv(self.theta, self.n)
 
     def partial_decrypt(self, ciphertext: PaillierCiphertext) -> int:
         """
@@ -111,9 +112,7 @@ class PaillierSharedKey(SecretKey):
                 "fact that the ciphertext that is being decrypted, differs between the parties."
             )
 
-        message = (
-            (combined_decryption - 1) // self.n * mod_inv(self.theta, self.n)
-        ) % self.n
+        message = ((combined_decryption - 1) // self.n * self.theta_inv) % self.n
 
         return message
 
@@ -130,7 +129,7 @@ class PaillierSharedKey(SecretKey):
                     "t": self.t,
                     "player_id": self.player_id,
                     "theta": self.theta,
-                    "share": self.share.serialize(),
+                    "share": self.share,
                 }
             }
         )

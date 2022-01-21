@@ -11,11 +11,13 @@ import math
 import secrets
 from dataclasses import asdict
 from random import randint
-from typing import Any, Dict, Iterable, List, Optional, Tuple, Union, cast
+from typing import Any, Dict, Iterable, List, Optional, Tuple, Union, cast, overload
 
 import sympy
+from typing_extensions import TypedDict
 
 from tno.mpc.communication import Serialization, SupportsSerialization
+from tno.mpc.communication.httphandlers import HTTPClient
 from tno.mpc.communication.pool import Pool
 from tno.mpc.encryption_schemes.paillier import (
     Paillier,
@@ -1103,10 +1105,9 @@ class DistributedPaillier(Paillier, SupportsSerialization):
             "lambda_", int_shamir_scheme, shares, index, corruption_threshold
         )
 
-        success = False
         theta = 0
         secret_key_sharing: IntegerShares
-        while not success:
+        while True:
             shares.secret_key = Shares.SecretKey()
             shares.beta = Shares.Beta()
             shares.beta.additive = secrets.randbelow(modulus)
@@ -1136,7 +1137,7 @@ class DistributedPaillier(Paillier, SupportsSerialization):
                 * math.factorial(int_shamir_scheme.number_of_parties) ** 3
             ) % modulus
             if math.gcd(theta, modulus) != 0:
-                success = True
+                break
 
         secret_key = PaillierSharedKey(
             n=modulus,
@@ -1147,56 +1148,95 @@ class DistributedPaillier(Paillier, SupportsSerialization):
         )
         return secret_key
 
-    def serialize(self, **kwargs: Any) -> Dict[str, Any]:
-        """
+    class SerializedDistributedPaillier(Paillier.SerializedPaillier, TypedDict):
+        session_id: int
+        distributed: bool
+        index: int
+
+    def serialize(
+        self, **_kwargs: Any
+    ) -> DistributedPaillier.SerializedDistributedPaillier:
+        r"""
         Serialization function for Distributed Paillier schemes, which will be passed to
         the communication module
 
-        :param kwargs: optional extra keyword arguments
-        :return: Dictionary containing the JSON serialization of this DistributedPaillier scheme.
+        :param \**_kwargs: optional extra keyword arguments
+        :return: Dictionary containing the serialization of this DistributedPaillier scheme.
         """
         return {
             "session_id": self.session_id,
             "distributed": self.distributed,
             "index": self.index,
-            "prec": Serialization.serialize(self.precision, **kwargs),
-            "pubkey": Serialization.serialize(self.public_key, **kwargs),
+            "prec": self.precision,
+            "pubkey": self.public_key,
         }
+
+    @overload
+    @staticmethod
+    def deserialize(
+        obj: DistributedPaillier.SerializedDistributedPaillier,
+        *,
+        origin: Optional[HTTPClient] = ...,
+        **kwargs: Any,
+    ) -> "DistributedPaillier":
+        ...
+
+    @overload
+    @staticmethod
+    def deserialize(
+        obj: Paillier.SerializedPaillier,
+        *,
+        origin: Optional[HTTPClient] = ...,
+        **kwargs: Any,
+    ) -> "Paillier":
+        ...
 
     @staticmethod
     def deserialize(
-        json_obj: Dict[str, Any], **_kwargs: Any
+        obj: Union[
+            DistributedPaillier.SerializedDistributedPaillier,
+            Paillier.SerializedPaillier,
+        ],
+        *,
+        origin: Optional[HTTPClient] = None,
+        **kwargs: Any,
     ) -> Union["DistributedPaillier", "Paillier"]:
-        """
+        r"""
         Deserialization function for Distributed Paillier schemes, which will be passed to
         the communication module
 
-        :param json_obj: serialization of a distributed paillier scheme.
-        :param _kwargs: optional extra keyword arguments
+        :param obj: serialization of a distributed paillier scheme.
+        :param origin: HTTPClient representing where the message came from if applicable
+        :param \**kwargs: optional extra keyword arguments
         :return: Deserialized DistributedPaillier scheme, local instance thereof, or a regular
             Paillier scheme in case this party is not part of the distributed session.
         """
-        if json_obj["distributed"]:
-            # The scheme should be stored in the local instances through the session ID
-            # If it is not, then this party was not part of the initial protocol
-            if json_obj["session_id"] in DistributedPaillier._local_instances:
-                return DistributedPaillier._local_instances[json_obj["session_id"]]
-        else:
-            # The scheme should be stored in the global instances through the session ID
-            # If it is not, then this party was not part of the initial protocol
-            if (
-                json_obj["session_id"]
-                in DistributedPaillier._global_instances[json_obj["index"]]
-            ):
-                return DistributedPaillier._global_instances[json_obj["index"]][
-                    json_obj["session_id"]
-                ]
+        session_id = obj.get("session_id", None)
+        if isinstance(session_id, int):
+            if obj.get("distributed", False):
+                # The scheme should be stored in the local instances through the session ID
+                # If it is not, then this party was not part of the initial protocol
+                if session_id in DistributedPaillier._local_instances:
+                    return DistributedPaillier._local_instances[session_id]
+            else:
+                # The scheme should be stored in the global instances through the session ID
+                # If it is not, then this party was not part of the initial protocol
+                index = obj.get("index", None)
+                if (
+                    isinstance(index, int)
+                    and session_id in DistributedPaillier._global_instances[index]
+                ):
+                    return DistributedPaillier._global_instances[index][session_id]
         # This party is not part of the distributed session, so we parse it as a Paillier scheme
-        return Paillier.deserialize(json_obj)
+        paillier_obj: Paillier.SerializedPaillier = {
+            "prec": obj["prec"],
+            "pubkey": obj["pubkey"],
+        }
+        return Paillier.deserialize(paillier_obj, origin=origin, **kwargs)
 
     # endregion
 
 
 # Load the serialization logic into the communication module
-if "DistributedPaillier" not in Serialization.new_deserialization_funcs:
+if "DistributedPaillier" not in Serialization.custom_deserialization_funcs:
     Serialization.set_serialization_logic(DistributedPaillier, check_annotations=False)
