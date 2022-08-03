@@ -1,12 +1,13 @@
 """
-Tests that can be ran using pytest to test the distributed keygen functionality
+Tests that can be run using pytest to test the distributed keygen functionality
 """
 
 import asyncio
 import math
-from typing import AsyncGenerator, Tuple, Union, cast
+from typing import Any, AsyncGenerator, List, Tuple, Type, Union
 
 import pytest
+import pytest_asyncio
 from _pytest.fixtures import FixtureRequest
 
 from tno.mpc.communication import Pool, Serialization
@@ -26,7 +27,7 @@ from tno.mpc.protocols.distributed_keygen import DistributedPaillier
     ids=["3-party", "4-party", "5-party"],
     scope="module",
 )
-async def fixture_pool_http(
+def fixture_pool_http(
     request: FixtureRequest,
     pool_http_3p: AsyncGenerator[Tuple[Pool, ...], None],
     pool_http_4p: AsyncGenerator[Tuple[Pool, ...], None],
@@ -51,13 +52,12 @@ async def fixture_pool_http(
     raise NotImplementedError("This has not been implemented")
 
 
-@pytest.fixture(
+@pytest_asyncio.fixture(
     name="distributed_schemes",
     params=list(range(2)),
     ids=["corruption_threshold " + str(i) for i in range(2)],
     scope="module",
 )
-@pytest.mark.asyncio
 async def fixture_distributed_schemes(
     pool_http: Tuple[Pool, ...],
     request: FixtureRequest,
@@ -69,19 +69,19 @@ async def fixture_distributed_schemes(
     :param request: Fixture request
     :return: a collection of schemes
     """
-    Serialization.custom_serialization_funcs.pop("DistributedPaillier")
-    Serialization.custom_deserialization_funcs.pop("DistributedPaillier")
-    Serialization.set_serialization_logic(DistributedPaillier, check_annotations=False)
+    Serialization.register_class(
+        DistributedPaillier, check_annotations=False, overwrite=True
+    )
     corruption_threshold: int = request.param  # type: ignore[attr-defined]
     key_length = 64
     prime_threshold = 200
     correct_param_biprime = 20
     stat_sec_shamir = 20
-    distributed_schemes = tuple(
+    distributed_schemes: Tuple[DistributedPaillier, ...] = tuple(
         await asyncio.gather(
             *[
                 DistributedPaillier.from_security_parameter(
-                    pool_http[i],
+                    pool,
                     corruption_threshold,
                     key_length,
                     prime_threshold,
@@ -90,20 +90,17 @@ async def fixture_distributed_schemes(
                     distributed=False,
                     precision=8,
                 )
-                for i in range(len(pool_http))
+                for pool in pool_http
             ]
         )
     )
-    return cast(
-        Tuple[DistributedPaillier, ...],
-        distributed_schemes,
-    )
+    return distributed_schemes
 
 
-@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "plaintext", [1, 2, 3, -1, -2, -3, 1.5, 42.42424242, -1.5, -42.42424242]
 )
+@pytest.mark.asyncio
 async def test_distributed_paillier_with_communication(
     distributed_schemes: Tuple[DistributedPaillier, ...],
     plaintext: Union[float, int],
@@ -115,11 +112,12 @@ async def test_distributed_paillier_with_communication(
     :param plaintext: plaintext to encrypt and decrypt
     """
     enc = {0: distributed_schemes[0].encrypt(plaintext)}
+    distributed_schemes[0].pool.async_broadcast(enc[0], "encryption")
+    assert not enc[0].fresh
     for iplayer in range(1, len(distributed_schemes)):
-        player_name = "local" + str(iplayer)
-        await distributed_schemes[0].pool.send(player_name, enc[0])
-
-        enc[iplayer] = await distributed_schemes[iplayer].pool.recv("local0")
+        enc[iplayer] = await distributed_schemes[iplayer].pool.recv(
+            "local0", "encryption"
+        )
 
     dec = await asyncio.gather(
         *[
@@ -130,10 +128,10 @@ async def test_distributed_paillier_with_communication(
     assert all(d == plaintext for d in dec)
 
 
-@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "plaintext", [1, 2, 3, -1, -2, -3, 1.5, 42.42424242, -1.5, -42.42424242]
 )
+@pytest.mark.asyncio
 async def test_distributed_paillier_serialization(
     distributed_schemes: Tuple[DistributedPaillier, ...],
     plaintext: Union[float, int],
@@ -145,16 +143,16 @@ async def test_distributed_paillier_serialization(
     :param plaintext: plaintext to encrypt
     """
     enc = {0: distributed_schemes[0].encrypt(plaintext)}
+    distributed_schemes[0].pool.async_broadcast(enc[0], "encryption")
+    assert not enc[0].fresh
+    distributed_schemes[0].pool.async_broadcast(distributed_schemes[0], "scheme")
 
+    # check equality of received values
     for iplayer in range(1, len(distributed_schemes)):
-        player_name = "local" + str(iplayer)
-        await distributed_schemes[0].pool.send(player_name, enc[0])
-        await distributed_schemes[0].pool.send(player_name, distributed_schemes[0])
-
-        enc[iplayer] = await distributed_schemes[iplayer].pool.recv("local0")
-
-        d_scheme_recv = await distributed_schemes[iplayer].pool.recv("local0")
-        # check equality of received values
+        enc[iplayer] = await distributed_schemes[iplayer].pool.recv(
+            "local0", "encryption"
+        )
+        d_scheme_recv = await distributed_schemes[iplayer].pool.recv("local0", "scheme")
 
         assert enc[0] == enc[iplayer]
         assert d_scheme_recv == distributed_schemes[iplayer] == distributed_schemes[0]
@@ -190,10 +188,10 @@ async def test_distributed_paillier_exception(pool_http: Tuple[Pool, ...]) -> No
         )
 
 
-@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "plaintext", [1, 2, 3, -1, -2, -3, 1.5, 42.42424242, -1.5, -42.42424242]
 )
+@pytest.mark.asyncio
 async def test_distributed_paillier_encrypt_decrypt(
     distributed_schemes: Tuple[DistributedPaillier, ...],
     plaintext: Union[float, int],
@@ -211,7 +209,98 @@ async def test_distributed_paillier_encrypt_decrypt(
     assert all(d == plaintext for d in dec)
 
 
+@pytest.mark.parametrize(
+    "plaintext", [1, 2, 3, -1, -2, -3, 1.5, 42.42424242, -1.5, -42.42424242]
+)
 @pytest.mark.asyncio
+async def test_distributed_paillier_encrypt_decrypt_parallel(
+    distributed_schemes: Tuple[DistributedPaillier, ...],
+    plaintext: Union[float, int],
+) -> None:
+    """
+    Tests distributed encryption and decryption in parallel
+
+    :param distributed_schemes: a collection of schemes
+    :param plaintext: plaintext to encrypt and decrypt
+    """
+    encs = [distributed_schemes[0].encrypt(plaintext) for _ in range(3)]
+    decs = await asyncio.gather(
+        *[
+            asyncio.gather(
+                *[
+                    distributed_schemes[i].decrypt(enc)
+                    for i in range(len(distributed_schemes))
+                ]
+            )
+            for enc in encs
+        ]
+    )
+    assert all(all(d == plaintext for d in dec) for dec in decs)
+
+
+@pytest.mark.asyncio
+async def test_distributed_paillier_encrypt_decrypt_sequence(
+    distributed_schemes: Tuple[DistributedPaillier, ...],
+) -> None:
+    """
+    Tests distributed sequence decryption
+
+    :param distributed_schemes: a collection of schemes
+    """
+    plaintexts = [1, 2, 3, -1, -2, -3, 1.5, 42.42424242, -1.5, -42.42424242]
+    ciphertexts = []
+    for plaintext in plaintexts:
+        ciphertexts.append(distributed_schemes[0].encrypt(plaintext))
+
+    decryptions = await asyncio.gather(
+        *[
+            distributed_schemes[i].decrypt_sequence(ciphertexts)
+            for i in range(len(distributed_schemes))
+        ]
+    )
+
+    for decryption_list in decryptions:
+        for idx, decryption in enumerate(decryption_list):
+            assert plaintexts[idx] == decryption
+
+
+@pytest.mark.asyncio
+async def test_distributed_paillier_encrypt_decrypt_sequence_parallel(
+    distributed_schemes: Tuple[DistributedPaillier, ...],
+) -> None:
+    """
+    Tests distributed sequence decryption when run in parallel
+
+    :param distributed_schemes: a collection of schemes
+    """
+    plaintexts_list: List[Union[List[float], List[int]]] = [
+        [1, 2, 3],
+        [-1, -2, -3],
+        [1.5, 42.42424242, -1.5 - 42.42424242],
+    ]
+    ciphertexts_list = []
+    for plaintext_list in plaintexts_list:
+        ciphertexts_list.append(
+            [distributed_schemes[0].encrypt(plaintext) for plaintext in plaintext_list]
+        )
+
+    decryption_lists: List[List[Union[List[float], List[int]]]] = await asyncio.gather(
+        *[
+            asyncio.gather(
+                *[
+                    distributed_schemes[i].decrypt_sequence(ciphertexts)
+                    for i in range(len(distributed_schemes))
+                ]
+            )
+            for ciphertexts in ciphertexts_list
+        ]
+    )
+
+    for result_lists, correct_decryption_list in zip(decryption_lists, plaintexts_list):
+        for decryption_list in result_lists:
+            assert decryption_list == correct_decryption_list
+
+
 @pytest.mark.parametrize(
     "receivers_id,result_indices",
     [
@@ -219,6 +308,7 @@ async def test_distributed_paillier_encrypt_decrypt(
         (1, (0, 1)),
     ],
 )
+@pytest.mark.asyncio
 async def test_distributed_paillier_encrypt_decrypt_receivers(
     distributed_schemes: Tuple[DistributedPaillier, ...],
     receivers_id: int,
@@ -253,3 +343,44 @@ async def test_distributed_paillier_encrypt_decrypt_receivers(
             assert dec[i] == 42
         else:
             assert dec[i] is None
+
+
+@pytest.mark.parametrize(
+    "collection_type",
+    (
+        dict,
+        list,
+        tuple,
+    ),
+)
+@pytest.mark.asyncio
+async def test_pool_broadcast_collection(
+    distributed_schemes: Tuple[DistributedPaillier, ...],
+    collection_type: Type[Any],
+) -> None:
+    """
+    Test whether sending of collections of ciphertexts using the broadcast method works as expected.
+
+    :param distributed_schemes: a collection of schemes
+    :param collection_type: The type of collection that is to be communicated.
+    """
+    plaintexts = [1, 2, 3, -1, -2, -3, 1.5, 42.42424242, -1.5, -42.42424242]
+    ciphertexts = map(distributed_schemes[0].encrypt, plaintexts)
+    if collection_type == dict:
+        collection: Any = {}
+        for index, ciphertext in enumerate(ciphertexts):
+            collection[str(index)] = ciphertext
+    else:
+        collection = collection_type(ciphertexts)
+
+    distributed_schemes[0].pool.async_broadcast(collection, "ciphertext_collection")
+
+    received_collections = await asyncio.gather(
+        *[
+            distributed_schemes[i].pool.recv("local0", "ciphertext_collection")
+            for i in range(1, len(distributed_schemes))
+        ]
+    )
+
+    for received_collection in received_collections:
+        assert received_collection == collection

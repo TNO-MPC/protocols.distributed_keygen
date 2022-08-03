@@ -4,11 +4,11 @@ Code for a single player in the Paillier distributed key-generation protocol.
 
 from __future__ import annotations
 
-import asyncio
 import copy
 import logging
 import math
 import secrets
+import warnings
 from dataclasses import asdict
 from random import randint
 from typing import Any, Dict, Iterable, List, Optional, Tuple, Union, cast, overload
@@ -16,7 +16,7 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple, Union, cast, over
 import sympy
 from typing_extensions import TypedDict
 
-from tno.mpc.communication import Serialization, SupportsSerialization
+from tno.mpc.communication import RepetitionError, Serialization, SupportsSerialization
 from tno.mpc.communication.httphandlers import HTTPClient
 from tno.mpc.communication.pool import Pool
 from tno.mpc.encryption_schemes.paillier import (
@@ -31,11 +31,12 @@ from tno.mpc.encryption_schemes.shamir import (
     ShamirSecretSharingIntegers as IntegerShamir,
 )
 from tno.mpc.encryption_schemes.shamir import ShamirSecretSharingScheme as Shamir
-from tno.mpc.encryption_schemes.shamir import ShamirShares, Shares
+from tno.mpc.encryption_schemes.shamir import ShamirShares
 from tno.mpc.encryption_schemes.templates.encryption_scheme import EncodedPlaintext
 from tno.mpc.encryption_schemes.utils import pow_mod
 
 from .paillier_shared_key import PaillierSharedKey
+from .utils import Shares
 
 
 class DistributedPaillier(Paillier, SupportsSerialization):
@@ -129,6 +130,7 @@ class DistributedPaillier(Paillier, SupportsSerialization):
             party_indices,
             correct_param_biprime,
             shamir_scheme,
+            session_id,
         )
 
         scheme = cls(
@@ -166,6 +168,12 @@ class DistributedPaillier(Paillier, SupportsSerialization):
                 cls._global_instances[index][session_id] = scheme
             else:
                 cls._global_instances[index] = {session_id: scheme}
+
+        if key_length < 1024:
+            warnings.warn(
+                f"The key length={key_length} is lower than the advised minimum of 1024."
+            )
+
         return scheme
 
     def __init__(
@@ -248,16 +256,16 @@ class DistributedPaillier(Paillier, SupportsSerialization):
         :return: Plaintext decrypted value.
         """
         decrypted_ciphertext = await self._decrypt_raw(ciphertext, receivers)
-        if decrypted_ciphertext is not None:
-            return (
-                self.decode(decrypted_ciphertext)
-                if apply_encoding
-                else decrypted_ciphertext.value
-            )
-        return None
+        return (
+            self.apply_encoding(decrypted_ciphertext, apply_encoding)
+            if decrypted_ciphertext is not None
+            else None
+        )
 
     async def _decrypt_raw(  # type: ignore[override]
-        self, ciphertext: PaillierCiphertext, receivers: Optional[List[str]] = None
+        self,
+        ciphertext: PaillierCiphertext,
+        receivers: Optional[List[str]] = None,
     ) -> Optional[EncodedPlaintext[int]]:
         """
         Function that starts a protocol between the parties involved to create local decryptions,
@@ -265,7 +273,7 @@ class DistributedPaillier(Paillier, SupportsSerialization):
 
         :param ciphertext: The ciphertext to be decrypted.
         :param receivers: An optional list specifying the names of the receivers, your own 'name'
-            is "self".
+            is "self". If none is provided it is sent to all parties in the pool.
         :return: The encoded plaintext corresponding to the ciphertext.
         """
         receivers_without_self: Optional[List[str]]
@@ -285,109 +293,180 @@ class DistributedPaillier(Paillier, SupportsSerialization):
             receivers_without_self = receivers
 
         # generate the local partial decryption
-        self.shares.partial_decryption.shares[self.index] = cast(
-            PaillierSharedKey, self.secret_key
-        ).partial_decrypt(ciphertext)
+        partial_decryption_shares = {
+            self.index: cast(PaillierSharedKey, self.secret_key).partial_decrypt(
+                ciphertext
+            )
+        }
 
         # send the partial decryption to all other parties in the provided network
-        self.broadcast(
-            {
-                "content": "partial_decryption",
-                "value": self.shares.partial_decryption.shares[self.index],
-            },
-            self.pool,
-            receivers=receivers_without_self,
+        encryption_hash = bin(ciphertext.peek_value()).zfill(32)[2:34]
+        message_id = (
+            f"distributed_decryption_session#{self.session_id}_hash#{encryption_hash}"
         )
+        if receivers_without_self is None or len(receivers_without_self) != 0:
+            self.pool.async_broadcast(
+                {
+                    "content": "partial_decryption",
+                    "value": partial_decryption_shares[self.index],
+                },
+                msg_id=message_id,
+                handler_names=receivers_without_self,
+            )
+
         if self_receive:
             # receive the partial decryption from the other parties
-            await self.gather_shares(
-                "partial_decryption", self.pool, self.shares, self.party_indices
+            other_partial_decryption_shares = await self.pool.recv_all(
+                msg_id=message_id
             )
+            for party, message in other_partial_decryption_shares:
+                msg_content = message["content"]
+                err_msg = f"received a share for {msg_content}, but expected partial_decryption"
+                assert msg_content == "partial_decryption", err_msg
+                partial_decryption_shares[self.party_indices[party]] = message["value"]
 
             # combine all partial decryption to obtain the full decryption
             decryption = cast(PaillierSharedKey, self.secret_key).decrypt(
-                self.shares.partial_decryption.shares
+                partial_decryption_shares
             )
             return EncodedPlaintext(decryption, scheme=self)
         return None
 
-    # endregion
-
-    # region Communication
-
-    @classmethod
-    def asend(
-        cls, pool: Pool, handler_name: str, message: Any, msg_id: Optional[str] = None
-    ) -> None:
+    def apply_encoding(
+        self, decrypted_ciphertext: EncodedPlaintext[int], apply_encoding: bool
+    ) -> paillier.Plaintext:
         """
-        Function that sends a message to a certain party in the pool
+        Function which decodes a decrypted ciphertext
 
-        :param pool: network of involved parties
-        :param handler_name: receiver
-        :param message: python object to be sent
-        :param msg_id: optional
+        :param decrypted_ciphertext: ciphertext to decode
+        :param apply_encoding: Boolean indicating if `decrypted_ciphertext` needs to be decoded.
+        :return: The decoded plaintext
         """
-        pool.asend(handler_name, message, msg_id)
+        return (
+            self.decode(decrypted_ciphertext)
+            if apply_encoding
+            else decrypted_ciphertext.value
+        )
 
-    @classmethod
-    async def recv(
-        cls, pool: Pool, handler_name: str, msg_id: Optional[str] = None
-    ) -> Any:
-        """
-        Function that receives a message from a certain party in the pool
-
-        :param pool: network for involved parties
-        :param handler_name: name of the party that sent the message
-        :param msg_id: optional message id of the expected message
-        :return: python object
-        """
-        return await pool.recv(handler_name, msg_id)
-
-    @classmethod
-    def broadcast(
-        cls,
-        message: Any,
-        pool: Pool,
-        message_id: Optional[str] = None,
+    async def decrypt_sequence(  # type: ignore[override]
+        self,
+        ciphertext_sequence: Iterable[PaillierCiphertext],
+        apply_encoding: bool = True,
         receivers: Optional[List[str]] = None,
-    ) -> None:
+    ) -> Optional[List[paillier.Plaintext]]:
         """
-        Function that sends a message to all other parties in the pool
+        Decrypts the list of ciphertexts
 
-        :param message: python object
-        :param pool: network of involved parties
-        :param message_id: optional message ID
-        :param receivers: optional list of receivers
+        :param ciphertext_sequence: Sequence of Ciphertext to be decrypted
+        :param apply_encoding: Boolean indicating whether the decrypted ciphertext is decoded before it is returned.
+            Defaults to True.
+        :param receivers: The receivers of all (partially) decrypted ciphertexts. If None is given it is sent to all
+            parties. If a list is provided it is sent to those receivers.
+        :return: The list of encoded plaintext corresponding to the ciphertext, or None if 'self' is not in the
+            receivers list.
         """
+
+        decrypted_ciphertext_list = await self._decrypt_sequence_raw(
+            ciphertext_sequence, receivers
+        )
+        return (
+            None
+            if decrypted_ciphertext_list is None
+            else [
+                self.apply_encoding(decryption, apply_encoding)
+                for decryption in decrypted_ciphertext_list
+            ]
+        )
+
+    async def _decrypt_sequence_raw(
+        self,
+        ciphertext_sequence: Iterable[PaillierCiphertext],
+        receivers: Optional[List[str]] = None,
+    ) -> Optional[List[EncodedPlaintext[int]]]:
+        """
+        Function that starts a protocol between the parties involved to create local decryptions,
+        send them to the other parties and combine them into full decryptions for each party.
+
+        :param ciphertext_sequence: The sequence of ciphertext to be decrypted.
+        :param receivers: An optional list specifying the names of the receivers, your own 'name'
+            is "self". If None is provided it is sent to all parties.
+        :return: The list of encoded plaintext corresponding to the ciphertext, or None if 'self' is not in the
+            receivers list.
+        """
+
+        receivers_without_self: Optional[List[str]]
         if receivers is not None:
-            other_parties: Iterable[str] = receivers
+            # If we are part of the receivers, we expect the other parties to send us partial
+            # decryptions
+            self_receive = "self" in receivers
+            # We will broadcast our partial decryption to all receivers, but we do not need to send
+            # anything to ourselves.
+            if self_receive:
+                receivers_without_self = [recv for recv in receivers if recv != "self"]
+            else:
+                receivers_without_self = receivers
         else:
-            other_parties = pool.pool_handlers.keys()
-        for party in other_parties:
-            pool.asend(party, message, message_id)
+            # If no receivers are specified, we assume everyone will receive the partial decryptions
+            self_receive = True
+            receivers_without_self = receivers
 
-    @classmethod
-    async def recv_all(cls, pool: Pool) -> Tuple[Tuple[str, Any]]:
-        """
-        Function that retrieves one message for each party
+        # partially decrypt the received cipher texts
+        partially_decrypted_shares = [
+            cast(PaillierSharedKey, self.secret_key).partial_decrypt(ciphertext)
+            for ciphertext in ciphertext_sequence
+        ]
 
-        :param pool: network of involved parties
-        :return: list of tuples containing the party and their message
-        """
-        other_parties = pool.pool_handlers.keys()
+        # send the partial decryption to all other parties in the provided network
+        encryption_hash = (
+            bin(next(iter(ciphertext_sequence)).peek_value()).zfill(32)[2:34]
+            + f"{len(partially_decrypted_shares)}"
+        )
+        message_id = (
+            f"distributed_decryption_session#{self.session_id}_hash#{encryption_hash}"
+        )
+        if receivers_without_self is None or len(receivers_without_self) != 0:
+            self.pool.async_broadcast(
+                {
+                    "content": "partial_decryption_sequence",
+                    "value": partially_decrypted_shares,
+                },
+                msg_id=message_id,
+                handler_names=receivers_without_self,
+            )
 
-        async def result_tuple(party: str) -> Tuple[str, Any]:
-            """
-            Get the Tuple containing party and message for the given party.
+        if self_receive:
 
-            :param party: Party for which a message should be received.
-            :return: Tuple with first the party and second the message that was received from
-                that party.
-            """
-            msg = await cls.recv(pool, party)
-            return party, msg
+            # store the partial decryptions per party
+            shares_dict_per_decryption: List[Dict[int, int]] = [
+                {self.index: partially_decrypted_share}
+                for partially_decrypted_share in partially_decrypted_shares
+            ]
 
-        return await asyncio.gather(*[result_tuple(party) for party in other_parties])  # type: ignore
+            # receive the partial decryption from the other parties
+            partial_decryptions_other_parties = await self.pool.recv_all(
+                msg_id=message_id,
+            )
+            for party, message in partial_decryptions_other_parties:
+                msg_content = message["content"]
+                err_msg = f"received a share for {msg_content}, but expected partial_decryption_sequence"
+                assert msg_content == "partial_decryption_sequence", err_msg
+                partial_decryptions_party = message["value"]
+                for shares_dict, partial_decryption in zip(
+                    shares_dict_per_decryption, partial_decryptions_party
+                ):
+                    shares_dict[self.party_indices[party]] = partial_decryption
+
+            # decrypt all the shares
+            decryption_results = []
+
+            for shares_dict in shares_dict_per_decryption:
+                # combine all partial decryption to obtain the full decryption
+                decryption = cast(PaillierSharedKey, self.secret_key).decrypt(
+                    shares_dict
+                )
+                decryption_results.append(EncodedPlaintext(decryption, scheme=self))
+            return decryption_results
+        return None
 
     # endregion
 
@@ -471,12 +550,15 @@ class DistributedPaillier(Paillier, SupportsSerialization):
         index = party_indices["self"]
 
         # send zero shares to other parties
+        zero_share_msg_id = f"distributed_keygen_session#{session_id}_zero"
         for party in other_parties:
             party_share = zero_sharing.shares[party_indices[party]]
-            cls.asend(pool, party, {"content": "zero", "value": party_share})
+            pool.asend(
+                party, {"content": "zero", "value": party_share}, zero_share_msg_id
+            )
 
         # receive all zero shares of others
-        responses = await cls.recv_all(pool)
+        responses = await pool.recv_all(msg_id=zero_share_msg_id)
         assert all(d["content"] == "zero" for _, d in responses)
         shares = [d["value"] for _, d in responses]
 
@@ -496,17 +578,23 @@ class DistributedPaillier(Paillier, SupportsSerialization):
         """
         success = False
         list_to_sort = []
+        attempt = 0
         while not success:
             success = True
+            attempt += 1
 
             # generate random number
             random_number_self = randint(0, 1000000)
 
             # send random number to all other parties
-            cls.broadcast(random_number_self, pool)
+            pool.async_broadcast(
+                random_number_self, msg_id=f"distributed_keygen_random_number#{attempt}"
+            )
 
             # receive random numbers from the other parties
-            responses = await cls.recv_all(pool)
+            responses = await pool.recv_all(
+                msg_id=f"distributed_keygen_random_number#{attempt}"
+            )
 
             list_to_sort = [("self", random_number_self)]
             for party, random_number_party in responses:
@@ -542,7 +630,7 @@ class DistributedPaillier(Paillier, SupportsSerialization):
         """
         shamir_length = 2 * (prime_length + math.ceil((math.log2(number_of_players))))
         shamir_scheme = Shamir(
-            sympy.nextprime(2 ** shamir_length),
+            sympy.nextprime(2**shamir_length),
             number_of_players,
             corruption_threshold,
         )
@@ -563,6 +651,7 @@ class DistributedPaillier(Paillier, SupportsSerialization):
         party_indices: Dict[str, int],
         correct_param_biprime: int,
         shamir_scheme: Shamir,
+        session_id: int,
     ) -> Tuple[PaillierPublicKey, PaillierSharedKey]:
         """
         Function to distributively generate a shared secret key and a corresponding public key
@@ -580,6 +669,8 @@ class DistributedPaillier(Paillier, SupportsSerialization):
         :param correct_param_biprime: correctness parameter that affects the certainty that the
             generated $N$ is a product of two primes
         :param shamir_scheme: $t$-out-of-$n$ Shamir secret sharing scheme
+        :param session_id: The unique session identifier belonging to the protocol that generated
+            the keys for this DistributedPaillier scheme.
         :return: regular Paillier public key and a shared secret key
         """
         secret_key = await cls.generate_secret_key(
@@ -595,6 +686,7 @@ class DistributedPaillier(Paillier, SupportsSerialization):
             party_indices,
             correct_param_biprime,
             shamir_scheme,
+            session_id,
         )
         modulus = secret_key.n
         public_key = PaillierPublicKey(modulus, modulus + 1)
@@ -611,8 +703,9 @@ class DistributedPaillier(Paillier, SupportsSerialization):
         prime_length: int,
         party_indices: Dict[str, int],
         shamir_scheme: Shamir,
+        session_id: int,
     ) -> Tuple[ShamirShares, ShamirShares]:
-        """ "
+        """
         Function to generate primes $p$ and $q$
 
         :param shares: dictionary that keeps track of shares for parties for certain numbers
@@ -621,19 +714,22 @@ class DistributedPaillier(Paillier, SupportsSerialization):
         :param prime_length: desired bit length of $p$ and $q$
         :param party_indices: mapping from party names to indices
         :param shamir_scheme: $t$-out-of-$n$ Shamir secret sharing scheme
+        :param session_id: The unique session identifier belonging to the protocol that generated
+            the keys for this DistributedPaillier scheme.
         :return: sharings of $p$ and $q$
         """
         shares.p.additive = cls.generate_prime_additive_share(index, prime_length)
+        shamir_msg_id = f"distributed_keygen_session#{session_id}_shamir"
         cls.shamir_share_and_send(
-            "p", shares, shamir_scheme, index, pool, party_indices
+            "p", shares, shamir_scheme, index, pool, party_indices, shamir_msg_id + "p"
         )
-        await cls.gather_shares("p", pool, shares, party_indices)
+        await cls.gather_shares("p", pool, shares, party_indices, shamir_msg_id + "p")
         p_sharing = cls.__add_received_shamir_shares("p", shares, index, shamir_scheme)
         shares.q.additive = cls.generate_prime_additive_share(index, prime_length)
         cls.shamir_share_and_send(
-            "q", shares, shamir_scheme, index, pool, party_indices
+            "q", shares, shamir_scheme, index, pool, party_indices, shamir_msg_id + "q"
         )
-        await cls.gather_shares("q", pool, shares, party_indices)
+        await cls.gather_shares("q", pool, shares, party_indices, shamir_msg_id + "q")
         q_sharing = cls.__add_received_shamir_shares("q", shares, index, shamir_scheme)
         return p_sharing, q_sharing
 
@@ -669,6 +765,7 @@ class DistributedPaillier(Paillier, SupportsSerialization):
         index: int,
         pool: Pool,
         party_indices: Dict[str, int],
+        msg_id: Optional[str] = None,
     ) -> None:
         """
         Create a secret-sharing of the input value, and send each share to
@@ -680,6 +777,7 @@ class DistributedPaillier(Paillier, SupportsSerialization):
         :param index: index of this party
         :param pool: network of involved parties
         :param party_indices: mapping from party names to indices
+        :param msg_id: Optional message id.
         :raise NotImplementedError: In case the given content is not "p" or "q".
         """
 
@@ -703,7 +801,7 @@ class DistributedPaillier(Paillier, SupportsSerialization):
         other_parties = pool.pool_handlers.keys()
         for party in other_parties:
             party_share = value_sharing.shares[party_indices[party]]
-            cls.asend(pool, party, {"content": content, "value": party_share})
+            pool.asend(party, {"content": content, "value": party_share}, msg_id=msg_id)
 
     @classmethod
     def int_shamir_share_and_send(
@@ -714,6 +812,7 @@ class DistributedPaillier(Paillier, SupportsSerialization):
         index: int,
         pool: Pool,
         party_indices: Dict[str, int],
+        msg_id: Optional[str] = None,
     ) -> None:
         r"""
         Create a secret-sharing of the input value, and send each share to
@@ -725,6 +824,7 @@ class DistributedPaillier(Paillier, SupportsSerialization):
         :param index: index of this party
         :param pool: network of involved parties
         :param party_indices: mapping from party names to indices
+        :param msg_id: Optional message id.
         :raise NotImplementedError: In case the given content is not "lambda\_" or "beta".
         """
         # retrieve the local additive share for content
@@ -747,7 +847,7 @@ class DistributedPaillier(Paillier, SupportsSerialization):
         other_parties = pool.pool_handlers.keys()
         for party in other_parties:
             party_share = value_sharing.shares[party_indices[party]]
-            cls.asend(pool, party, {"content": content, "value": party_share})
+            pool.asend(party, {"content": content, "value": party_share}, msg_id=msg_id)
 
     @classmethod
     def __add_received_shamir_shares(
@@ -806,7 +906,7 @@ class DistributedPaillier(Paillier, SupportsSerialization):
 
     @classmethod
     def __mul_received_v_and_check(cls, shares: Shares, modulus: int) -> bool:
-        """ "
+        """
         Function to test whether a certain primality check holds
 
         :param shares: dictionary keeping track of shares for a certain value
@@ -832,6 +932,7 @@ class DistributedPaillier(Paillier, SupportsSerialization):
         pool: Pool,
         shares: Shares,
         party_indices: Dict[str, int],
+        msg_id: Optional[str] = None,
     ) -> None:
         r"""
         Gather all shares with label content
@@ -840,11 +941,11 @@ class DistributedPaillier(Paillier, SupportsSerialization):
         :param pool: network of involved parties
         :param shares: dictionary keeping track of shares of different parties for certain numbers
         :param party_indices: mapping from party names to indices
+        :param msg_id: Optional message id.
         :raise NotImplementedError: In case the given content is not any of the possible values
-            for which we store shares ("p", "q", "n", "biprime", "lambda\_", "beta", "secret_key",
-            "partial_decryption").
+            for which we store shares ("p", "q", "n", "biprime", "lambda\_", "beta", "secret_key").
         """
-        shares_from_other_parties = await cls.recv_all(pool)
+        shares_from_other_parties = await pool.recv_all(msg_id=msg_id)
         for party, message in shares_from_other_parties:
             msg_content = message["content"]
             err_msg = f"received a share for {msg_content}, but expected {content}"
@@ -865,10 +966,6 @@ class DistributedPaillier(Paillier, SupportsSerialization):
                 shares.beta.shares[party_indices[party]] = message["value"]
             elif content == "secret_key":
                 shares.secret_key.shares[party_indices[party]] = message["value"]
-            elif content == "partial_decryption":
-                shares.partial_decryption.shares[party_indices[party]] = message[
-                    "value"
-                ]
             else:
                 raise NotImplementedError(
                     f"Don't know what to do with this content: {content}"
@@ -883,6 +980,7 @@ class DistributedPaillier(Paillier, SupportsSerialization):
         pool: Pool,
         index: int,
         party_indices: Dict[str, int],
+        session_id: int,
     ) -> bool:
         """
         Function to test for biprimality of $N$
@@ -894,14 +992,25 @@ class DistributedPaillier(Paillier, SupportsSerialization):
         :param pool: network of involved parties
         :param index: index of this party
         :param party_indices: mapping from party name to indices
+        :param session_id: The unique session identifier belonging to the protocol that generated
+            the keys for this DistributedPaillier scheme.
         :return: true if the test succeeds and false if it fails
         """
         counter = 0
         while counter < correct_param_biprime:
             test_value = secrets.randbelow(modulus)
-            cls.broadcast({"content": "biprime", "value": test_value}, pool)
+            pool.async_broadcast(
+                {"content": "biprime", "value": test_value},
+                msg_id=f"distributed_keygen_session#{session_id}_biprime_test",
+            )
             shares.biprime.shares[index] = test_value
-            await cls.gather_shares("biprime", pool, shares, party_indices)
+            await cls.gather_shares(
+                "biprime",
+                pool,
+                shares,
+                party_indices,
+                msg_id=f"distributed_keygen_session#{session_id}_biprime_test",
+            )
             test_value = 0
             for value in shares.biprime.shares.values():
                 test_value += value
@@ -925,8 +1034,17 @@ class DistributedPaillier(Paillier, SupportsSerialization):
                         )
                     )
                 shares.v.shares[index] = v_value
-                cls.broadcast({"content": "v", "value": v_value}, pool)
-                await cls.gather_shares("v", pool, shares, party_indices)
+                pool.async_broadcast(
+                    {"content": "v", "value": v_value},
+                    msg_id=f"distributed_keygen_session#{session_id}_biprime_v",
+                )
+                await cls.gather_shares(
+                    "v",
+                    pool,
+                    shares,
+                    party_indices,
+                    msg_id=f"distributed_keygen_session#{session_id}_biprime_v",
+                )
 
                 if cls.__mul_received_v_and_check(shares, modulus):
                     counter += 1
@@ -941,7 +1059,7 @@ class DistributedPaillier(Paillier, SupportsSerialization):
         modulus: int,
         shares: Shares,
     ) -> int:
-        """ "
+        """
         Function to generate an additive share of lambda
 
         :param index: index of this party
@@ -980,6 +1098,7 @@ class DistributedPaillier(Paillier, SupportsSerialization):
         prime_length: int,
         shamir_scheme: Shamir,
         correct_param_biprime: int,
+        session_id: int,
     ) -> int:
         r"""
         Function that starts a protocol to generate candidates for $p$ and $q$
@@ -996,6 +1115,8 @@ class DistributedPaillier(Paillier, SupportsSerialization):
         :param shamir_scheme: $t$-out-of-$n$ Shamir secret sharing scheme
         :param correct_param_biprime: correctness parameter that affects the certainty that the
             generated $N$ is a product of two primes
+        :param session_id: The unique session identifier belonging to the protocol that generated
+            the keys for this DistributedPaillier scheme.
         :return: modulus $N$
         """
 
@@ -1013,7 +1134,13 @@ class DistributedPaillier(Paillier, SupportsSerialization):
 
             # secreting sharings of p and q
             p_sharing, q_sharing = await cls.generate_pq(
-                shares, pool, index, prime_length, party_indices, shamir_scheme
+                shares,
+                pool,
+                index,
+                prime_length,
+                party_indices,
+                shamir_scheme,
+                session_id,
             )
 
             # secret sharing of the modulus
@@ -1023,15 +1150,28 @@ class DistributedPaillier(Paillier, SupportsSerialization):
             modulus_sharing += zero_share
 
             shares.n.shares[index] = modulus_sharing.shares[index]
-            cls.broadcast(
-                {"content": "n", "value": modulus_sharing.shares[index]}, pool
+            pool.async_broadcast(
+                {"content": "n", "value": modulus_sharing.shares[index]},
+                msg_id=f"distributed_keygen_session#{session_id}_modulus",
             )
-            await cls.gather_shares("n", pool, shares, party_indices)
+            await cls.gather_shares(
+                "n",
+                pool,
+                shares,
+                party_indices,
+                msg_id=f"distributed_keygen_session#{session_id}_modulus",
+            )
             modulus_sharing.shares = shares.n.shares
             modulus = modulus_sharing.reconstruct_secret()
             if not cls.__small_prime_divisors_test(prime_list, modulus):
                 bip = await cls.__biprime_test(
-                    correct_param_biprime, shares, modulus, pool, index, party_indices
+                    correct_param_biprime,
+                    shares,
+                    modulus,
+                    pool,
+                    index,
+                    party_indices,
+                    session_id,
                 )
                 if not bip:
                     bip_err_counter += 1
@@ -1057,6 +1197,7 @@ class DistributedPaillier(Paillier, SupportsSerialization):
         party_indices: Dict[str, int],
         correct_param_biprime: int,
         shamir_scheme: Shamir,
+        session_id: int,
     ) -> PaillierSharedKey:
         """
         Functions that generates the modulus and sets up the sharing of the private key
@@ -1074,6 +1215,8 @@ class DistributedPaillier(Paillier, SupportsSerialization):
         :param correct_param_biprime: correctness parameter that affects the certainty that the
             generated $N$ is a product of two primes
         :param shamir_scheme: $t$-out-of-$n$ Shamir secret sharing scheme
+        :param session_id: The unique session identifier belonging to the protocol that generated
+            the keys for this DistributedPaillier scheme.
         :return: shared secret key
         """
         modulus = await cls.compute_modulus(
@@ -1086,6 +1229,7 @@ class DistributedPaillier(Paillier, SupportsSerialization):
             prime_length,
             shamir_scheme,
             correct_param_biprime,
+            session_id,
         )
         int_shamir_scheme = IntegerShamir(
             stat_sec_shamir,
@@ -1097,24 +1241,40 @@ class DistributedPaillier(Paillier, SupportsSerialization):
         shares.lambda_.additive = cls.__generate_lambda_addit_share(
             index, modulus, shares
         )
+        shamir_msg_id = f"distributed_keygen_session#{session_id}_int_shamir"
         cls.int_shamir_share_and_send(
-            "lambda_", shares, int_shamir_scheme, index, pool, party_indices
+            "lambda_",
+            shares,
+            int_shamir_scheme,
+            index,
+            pool,
+            party_indices,
+            shamir_msg_id + "lambda",
         )
-        await cls.gather_shares("lambda_", pool, shares, party_indices)
+        await cls.gather_shares(
+            "lambda_", pool, shares, party_indices, shamir_msg_id + "lambda"
+        )
         lambda_ = cls.__int_add_received_shares(
             "lambda_", int_shamir_scheme, shares, index, corruption_threshold
         )
 
-        theta = 0
         secret_key_sharing: IntegerShares
         while True:
             shares.secret_key = Shares.SecretKey()
             shares.beta = Shares.Beta()
             shares.beta.additive = secrets.randbelow(modulus)
             cls.int_shamir_share_and_send(
-                "beta", shares, int_shamir_scheme, index, pool, party_indices
+                "beta",
+                shares,
+                int_shamir_scheme,
+                index,
+                pool,
+                party_indices,
+                shamir_msg_id + "beta",
             )
-            await cls.gather_shares("beta", pool, shares, party_indices)
+            await cls.gather_shares(
+                "beta", pool, shares, party_indices, shamir_msg_id + "beta"
+            )
             beta = cls.__int_add_received_shares(
                 "beta", int_shamir_scheme, shares, index, corruption_threshold
             )
@@ -1125,10 +1285,17 @@ class DistributedPaillier(Paillier, SupportsSerialization):
             }
             shares.secret_key.shares = temp_secret_key.shares
 
-            cls.broadcast(
-                {"content": "secret_key", "value": temp_secret_key.shares[index]}, pool
+            pool.async_broadcast(
+                {"content": "secret_key", "value": temp_secret_key.shares[index]},
+                msg_id=f"distributed_keygen_session#{session_id}_sk",
             )
-            await cls.gather_shares("secret_key", pool, shares, party_indices)
+            await cls.gather_shares(
+                "secret_key",
+                pool,
+                shares,
+                party_indices,
+                msg_id=f"distributed_keygen_session#{session_id}_sk",
+            )
             reconstructed_secret_key = temp_secret_key.reconstruct_secret(
                 modulus=modulus
             )
@@ -1238,5 +1405,7 @@ class DistributedPaillier(Paillier, SupportsSerialization):
 
 
 # Load the serialization logic into the communication module
-if "DistributedPaillier" not in Serialization.custom_deserialization_funcs:
-    Serialization.set_serialization_logic(DistributedPaillier, check_annotations=False)
+try:
+    Serialization.register_class(DistributedPaillier, check_annotations=False)
+except RepetitionError:
+    pass

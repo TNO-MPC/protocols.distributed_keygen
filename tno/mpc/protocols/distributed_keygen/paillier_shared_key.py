@@ -56,7 +56,7 @@ class PaillierSharedKey(SecretKey):
 
         if self.n != ciphertext.scheme.public_key.n:
             raise ValueError("encrypted against a different key!")
-        ciphertext_value = ciphertext.value
+        ciphertext_value = ciphertext.get_value()
         n_fac = self.share.n_fac
         other_honest_players = [
             i + 1 for i in range(self.share.degree + 1) if i + 1 != self.player_id
