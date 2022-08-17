@@ -208,7 +208,7 @@ PARTIES = 4  # number of parties that will be involved in the protocol, you can 
 
 def setup_local_pool(server_port: int, ports: List[int]) -> Pool:
     pool = Pool()
-    pool.add_http_server(server_port, "127.0.0.1")
+    pool.add_http_server(server_port)
     for client_port in (port for port in ports if port != server_port):
         pool.add_http_client(f"client{client_port}", "127.0.0.1", client_port)
     return pool
