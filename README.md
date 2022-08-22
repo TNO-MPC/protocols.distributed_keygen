@@ -172,7 +172,7 @@ Alternatively, the user may pass `"once"`, `"always"` or even `"error"`.
 
 Finally, note that some operations issue two warnings, e.g. `c1-c2` issues a warning for computing `-c2` and a warning for computing `c1 + (-c2)`.
 
-### Advanced usgae
+### Advanced usage
 
 The basic usage in the example above can be improved upon by explicitly randomizing as late as possible, i.e. by
 only randomizing non-fresh ciphertexts directly before they are communicated using the `randomize()` method.
@@ -259,7 +259,7 @@ stat_sec_shamir = (
 
 def setup_local_pool(server_port: int, others: List[Tuple[str, int]]) -> Pool:
     pool = Pool()
-    pool.add_http_server(server_port, "localhost")
+    pool.add_http_server(server_port)
     for client_ip, client_port in others:
         pool.add_http_client(
             f"client_{client_ip}_{client_port}", client_ip, client_port
