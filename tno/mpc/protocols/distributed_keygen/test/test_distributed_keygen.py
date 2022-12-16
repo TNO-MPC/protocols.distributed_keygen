@@ -43,11 +43,11 @@ def fixture_pool_http(
     :raise NotImplementedError: raised when based on the given param, no fixture can be created
     :return: a collection of communication pools
     """
-    if request.param == 3:  # type: ignore[attr-defined]
+    if request.param == 3:
         return pool_http_3p
-    if request.param == 4:  # type: ignore[attr-defined]
+    if request.param == 4:
         return pool_http_4p
-    if request.param == 5:  # type: ignore[attr-defined]
+    if request.param == 5:
         return pool_http_5p
     raise NotImplementedError("This has not been implemented")
 
@@ -72,7 +72,7 @@ async def fixture_distributed_schemes(
     Serialization.register_class(
         DistributedPaillier, check_annotations=False, overwrite=True
     )
-    corruption_threshold: int = request.param  # type: ignore[attr-defined]
+    corruption_threshold: int = request.param
     key_length = 64
     prime_threshold = 200
     correct_param_biprime = 20

@@ -996,12 +996,13 @@ class DistributedPaillier(Paillier, SupportsSerialization):
             the keys for this DistributedPaillier scheme.
         :return: true if the test succeeds and false if it fails
         """
-        counter = 0
-        while counter < correct_param_biprime:
+        successfull_biprime_tests = 0
+        biprime_test_attempts = 0
+        while successfull_biprime_tests < correct_param_biprime:
             test_value = secrets.randbelow(modulus)
             pool.async_broadcast(
                 {"content": "biprime", "value": test_value},
-                msg_id=f"distributed_keygen_session#{session_id}_biprime_test",
+                msg_id=f"distributed_keygen_session#{session_id}_{biprime_test_attempts}_biprime_test",
             )
             shares.biprime.shares[index] = test_value
             await cls.gather_shares(
@@ -1009,8 +1010,10 @@ class DistributedPaillier(Paillier, SupportsSerialization):
                 pool,
                 shares,
                 party_indices,
-                msg_id=f"distributed_keygen_session#{session_id}_biprime_test",
+                msg_id=f"distributed_keygen_session#{session_id}_{biprime_test_attempts}_biprime_test",
             )
+            biprime_test_attempts += 1
+
             test_value = 0
             for value in shares.biprime.shares.values():
                 test_value += value
@@ -1047,7 +1050,7 @@ class DistributedPaillier(Paillier, SupportsSerialization):
                 )
 
                 if cls.__mul_received_v_and_check(shares, modulus):
-                    counter += 1
+                    successfull_biprime_tests += 1
                 else:
                     return False
         return True

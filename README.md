@@ -9,7 +9,7 @@ The package tno.mpc.protocols.distributed_keygen is part of the TNO Python Toolb
 
 ## Documentation
 
-Documentation of the tno.mpc.protocols.distributed_keygen package can be found [here](https://docs.mpc.tno.nl/protocols/distributed_keygen/3.1.2).
+Documentation of the tno.mpc.protocols.distributed_keygen package can be found [here](https://docs.mpc.tno.nl/protocols/distributed_keygen/3.1.4).
 
 ## Install
 
