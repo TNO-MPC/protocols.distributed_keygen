@@ -8,13 +8,13 @@ import copy
 import logging
 import math
 import secrets
+import sys
 import warnings
 from dataclasses import asdict
 from random import randint
-from typing import Any, Dict, Iterable, List, Optional, Tuple, Union, cast, overload
+from typing import Any, Iterable, cast, overload
 
 import sympy
-from typing_extensions import TypedDict
 
 from tno.mpc.communication import RepetitionError, Serialization, SupportsSerialization
 from tno.mpc.communication.httphandlers import HTTPClient
@@ -36,7 +36,25 @@ from tno.mpc.encryption_schemes.templates.encryption_scheme import EncodedPlaint
 from tno.mpc.encryption_schemes.utils import pow_mod
 
 from .paillier_shared_key import PaillierSharedKey
-from .utils import Shares
+from .utils import (
+    AdditiveVariable,
+    Batched,
+    ShamirVariable,
+    Shares,
+    exchange_reconstruct,
+    exchange_shares,
+)
+
+if sys.version_info < (3, 8):
+    from typing_extensions import TypedDict
+else:
+    from typing import TypedDict
+
+
+class SessionIdError(Exception):
+    """
+    Used to raise exceptions when a session ID is invalid
+    """
 
 
 class DistributedPaillier(Paillier, SupportsSerialization):
@@ -50,8 +68,8 @@ class DistributedPaillier(Paillier, SupportsSerialization):
     default_biprime_param = 40
     default_sec_shamir = 40
     default_corruption_threshold = 1
-    _global_instances: Dict[int, Dict[int, "DistributedPaillier"]] = {}
-    _local_instances: Dict[int, "DistributedPaillier"] = {}
+    _global_instances: dict[int, dict[int, DistributedPaillier]] = {}
+    _local_instances: dict[int, DistributedPaillier] = {}
 
     @classmethod
     async def from_security_parameter(  # type: ignore[override]
@@ -64,6 +82,7 @@ class DistributedPaillier(Paillier, SupportsSerialization):
         stat_sec_shamir: int = default_sec_shamir,
         distributed: bool = True,
         precision: int = 0,
+        batch_size: int = 100,
     ) -> DistributedPaillier:
         r"""
         Function that takes security parameters related to secret sharing and Paillier and
@@ -87,9 +106,11 @@ class DistributedPaillier(Paillier, SupportsSerialization):
         :param stat_sec_shamir: security parameter for the Shamir secret sharing over the integers
         :param distributed: Whether the different parties are run on different python instances
         :param precision: precision (number of decimals) to ensure
+        :param batch_size: How many $p$'s and $q$'s to generate at once (drastically
+            reduces communication at the expense of potentially wasted computation)
         :raise ValueError: In case the number of parties $n$ and the corruption threshold $t$ do
             not satisfy that $n \geq 2*t + 1$
-        :raise Exception: In case the parties agree on a session id that is already being used.
+        :raise SessionIdError: In case the parties agree on a session ID that is already being used.
         :return: DistributedPaillier scheme containing a regular Paillier public key and a shared
             secret key.
         """
@@ -131,6 +152,7 @@ class DistributedPaillier(Paillier, SupportsSerialization):
             correct_param_biprime,
             shamir_scheme,
             session_id,
+            batch_size,
         )
 
         scheme = cls(
@@ -151,7 +173,7 @@ class DistributedPaillier(Paillier, SupportsSerialization):
         # instance for that session.
         if distributed:
             if session_id in cls._local_instances:
-                raise Exception(
+                raise SessionIdError(
                     "An already existing session ID is about to be overwritten. "
                     "This can only happen if multiple sessions are run within the same python "
                     "instance and one of those session has the same ID"
@@ -160,7 +182,7 @@ class DistributedPaillier(Paillier, SupportsSerialization):
         else:
             if index in cls._global_instances:
                 if session_id in cls._global_instances[index]:
-                    raise Exception(
+                    raise SessionIdError(
                         "An already existing session ID is about to be overwritten. "
                         "This can only happen if multiple sessions are run within the same python "
                         "instance and one of those session has the same ID"
@@ -183,7 +205,7 @@ class DistributedPaillier(Paillier, SupportsSerialization):
         precision: int,
         pool: Pool,
         index: int,
-        party_indices: Dict[str, int],
+        party_indices: dict[str, int],
         shares: Shares,
         session_id: int,
         distributed: bool,
@@ -241,8 +263,8 @@ class DistributedPaillier(Paillier, SupportsSerialization):
         self,
         ciphertext: PaillierCiphertext,
         apply_encoding: bool = True,
-        receivers: Optional[List[str]] = None,
-    ) -> Optional[paillier.Plaintext]:
+        receivers: list[str] | None = None,
+    ) -> paillier.Plaintext | None:
         """
         Decrypts the input ciphertext. Starts a protocol between the parties involved to create
         local decryptions, send them to the other parties and combine them into full decryptions
@@ -265,8 +287,8 @@ class DistributedPaillier(Paillier, SupportsSerialization):
     async def _decrypt_raw(  # type: ignore[override]
         self,
         ciphertext: PaillierCiphertext,
-        receivers: Optional[List[str]] = None,
-    ) -> Optional[EncodedPlaintext[int]]:
+        receivers: list[str] | None = None,
+    ) -> EncodedPlaintext[int] | None:
         """
         Function that starts a protocol between the parties involved to create local decryptions,
         send them to the other parties and combine them into full decryptions for each party.
@@ -276,7 +298,7 @@ class DistributedPaillier(Paillier, SupportsSerialization):
             is "self". If none is provided it is sent to all parties in the pool.
         :return: The encoded plaintext corresponding to the ciphertext.
         """
-        receivers_without_self: Optional[List[str]]
+        receivers_without_self: list[str] | None
         if receivers is not None:
             # If we are part of the receivers, we expect the other parties to send us partial
             # decryptions
@@ -316,9 +338,9 @@ class DistributedPaillier(Paillier, SupportsSerialization):
 
         if self_receive:
             # receive the partial decryption from the other parties
-            other_partial_decryption_shares = await self.pool.recv_all(
-                msg_id=message_id
-            )
+            other_partial_decryption_shares: tuple[
+                tuple[str, dict[str, Any]]
+            ] = await self.pool.recv_all(msg_id=message_id)
             for party, message in other_partial_decryption_shares:
                 msg_content = message["content"]
                 err_msg = f"received a share for {msg_content}, but expected partial_decryption"
@@ -352,8 +374,8 @@ class DistributedPaillier(Paillier, SupportsSerialization):
         self,
         ciphertext_sequence: Iterable[PaillierCiphertext],
         apply_encoding: bool = True,
-        receivers: Optional[List[str]] = None,
-    ) -> Optional[List[paillier.Plaintext]]:
+        receivers: list[str] | None = None,
+    ) -> list[paillier.Plaintext] | None:
         """
         Decrypts the list of ciphertexts
 
@@ -381,8 +403,8 @@ class DistributedPaillier(Paillier, SupportsSerialization):
     async def _decrypt_sequence_raw(
         self,
         ciphertext_sequence: Iterable[PaillierCiphertext],
-        receivers: Optional[List[str]] = None,
-    ) -> Optional[List[EncodedPlaintext[int]]]:
+        receivers: list[str] | None = None,
+    ) -> list[EncodedPlaintext[int]] | None:
         """
         Function that starts a protocol between the parties involved to create local decryptions,
         send them to the other parties and combine them into full decryptions for each party.
@@ -394,7 +416,7 @@ class DistributedPaillier(Paillier, SupportsSerialization):
             receivers list.
         """
 
-        receivers_without_self: Optional[List[str]]
+        receivers_without_self: list[str] | None
         if receivers is not None:
             # If we are part of the receivers, we expect the other parties to send us partial
             # decryptions
@@ -435,9 +457,8 @@ class DistributedPaillier(Paillier, SupportsSerialization):
             )
 
         if self_receive:
-
             # store the partial decryptions per party
-            shares_dict_per_decryption: List[Dict[int, int]] = [
+            shares_dict_per_decryption: list[dict[int, int]] = [
                 {self.index: partially_decrypted_share}
                 for partially_decrypted_share in partially_decrypted_shares
             ]
@@ -479,7 +500,7 @@ class DistributedPaillier(Paillier, SupportsSerialization):
         key_length: int,
         prime_threshold: int,
         corruption_threshold: int,
-    ) -> Tuple[int, int, List[int], Shamir, Shares, List[str]]:
+    ) -> tuple[int, int, list[int], Shamir, Shares, list[str]]:
         r"""
         Function that sets initial variables for the process of creating a shared secret key
 
@@ -503,7 +524,7 @@ class DistributedPaillier(Paillier, SupportsSerialization):
         # there's no point in doing a small prime test
         if prime_length < math.log(prime_threshold):
             prime_threshold = 1
-        prime_list = list(sympy.primerange(3, prime_threshold + 1))
+        prime_list: list[int] = list(sympy.primerange(3, prime_threshold + 1))
         shamir_scheme = cls.__init_shamir_scheme(
             prime_length, number_of_players, corruption_threshold
         )
@@ -522,8 +543,8 @@ class DistributedPaillier(Paillier, SupportsSerialization):
 
     @classmethod
     async def setup_protocol(
-        cls, shamir_scheme: Shamir, other_parties: List[str], pool: Pool
-    ) -> Tuple[int, Dict[str, int], ShamirShares, int]:
+        cls, shamir_scheme: Shamir, other_parties: list[str], pool: Pool
+    ) -> tuple[int, dict[str, int], ShamirShares, int]:
         """
         Function that initiates a protocol to determine IDs and sets own ID
         Additionally, the protocol prepares a secret sharing of 0 under a 2t-out-of-n
@@ -568,7 +589,7 @@ class DistributedPaillier(Paillier, SupportsSerialization):
         return index, party_indices, zero_share, session_id
 
     @classmethod
-    async def get_indices(cls, pool: Pool) -> Tuple[Dict[str, int], int]:
+    async def get_indices(cls, pool: Pool) -> tuple[dict[str, int], int]:
         """
         Function that initiates a protocol to determine IDs (indices) for each party
 
@@ -577,7 +598,7 @@ class DistributedPaillier(Paillier, SupportsSerialization):
             index
         """
         success = False
-        list_to_sort = []
+        list_to_sort: list[tuple[str, int]] = []
         attempt = 0
         while not success:
             success = True
@@ -628,7 +649,7 @@ class DistributedPaillier(Paillier, SupportsSerialization):
         :param corruption_threshold: number of parties allowed to be corrupted
         :return: Shamir secret sharing scheme
         """
-        shamir_length = 2 * (prime_length + math.ceil((math.log2(number_of_players))))
+        shamir_length = 2 * (prime_length + math.ceil(math.log2(number_of_players)))
         shamir_scheme = Shamir(
             sympy.nextprime(2**shamir_length),
             number_of_players,
@@ -646,13 +667,14 @@ class DistributedPaillier(Paillier, SupportsSerialization):
         index: int,
         zero_share: ShamirShares,
         pool: Pool,
-        prime_list: List[int],
+        prime_list: list[int],
         prime_length: int,
-        party_indices: Dict[str, int],
+        party_indices: dict[str, int],
         correct_param_biprime: int,
         shamir_scheme: Shamir,
         session_id: int,
-    ) -> Tuple[PaillierPublicKey, PaillierSharedKey]:
+        batch_size: int = 1,
+    ) -> tuple[PaillierPublicKey, PaillierSharedKey]:
         """
         Function to distributively generate a shared secret key and a corresponding public key
 
@@ -671,6 +693,8 @@ class DistributedPaillier(Paillier, SupportsSerialization):
         :param shamir_scheme: $t$-out-of-$n$ Shamir secret sharing scheme
         :param session_id: The unique session identifier belonging to the protocol that generated
             the keys for this DistributedPaillier scheme.
+        :param batch_size: How many $p$'s and $q$'s to generate at once (drastically
+            reduces communication at the expense of potentially wasted computation)
         :return: regular Paillier public key and a shared secret key
         """
         secret_key = await cls.generate_secret_key(
@@ -687,6 +711,7 @@ class DistributedPaillier(Paillier, SupportsSerialization):
             correct_param_biprime,
             shamir_scheme,
             session_id,
+            batch_size,
         )
         modulus = secret_key.n
         public_key = PaillierPublicKey(modulus, modulus + 1)
@@ -695,18 +720,30 @@ class DistributedPaillier(Paillier, SupportsSerialization):
         return public_key, secret_key
 
     @classmethod
-    async def generate_pq(
+    async def _generate_pq(
         cls,
-        shares: Shares,
         pool: Pool,
         index: int,
         prime_length: int,
-        party_indices: Dict[str, int],
+        party_indices: dict[str, int],
         shamir_scheme: Shamir,
         session_id: int,
-    ) -> Tuple[ShamirShares, ShamirShares]:
+        batch_size: int = 1,
+        msg_id: str = "",
+    ) -> tuple[Batched[ShamirVariable], Batched[ShamirVariable], list[int], list[int]]:
         """
-        Function to generate primes $p$ and $q$
+        Generate secretively two random prime candidates $p$ and $q$. These
+        primes must be tested for primality before using the modulus N=pq.
+
+        The number q is picked such that q = 3 mod 4, as this is needed for the
+        biprimality test.
+
+        This method supports batching (set batch_size > 1) to generate and share
+        multiple $p$'s and $q$'s in one go. This potentially speeds up the key
+        generation as less communication is required. Setting the batch_size to
+        high will mean that potentially more p and q pairs are generated than
+        needed, resulting in wasted computation. The batch_size is a trade-off
+        between wasted computation and reduced communication.
 
         :param shares: dictionary that keeps track of shares for parties for certain numbers
         :param pool: network of involved parties
@@ -716,25 +753,85 @@ class DistributedPaillier(Paillier, SupportsSerialization):
         :param shamir_scheme: $t$-out-of-$n$ Shamir secret sharing scheme
         :param session_id: The unique session identifier belonging to the protocol that generated
             the keys for this DistributedPaillier scheme.
+        :param batch_size: How many $p$'s and $q$'s to generate at once (drastically
+            reduces communication at the expense of potentially wasted computation)
         :return: sharings of $p$ and $q$
         """
-        shares.p.additive = cls.generate_prime_additive_share(index, prime_length)
-        shamir_msg_id = f"distributed_keygen_session#{session_id}_shamir"
-        cls.shamir_share_and_send(
-            "p", shares, shamir_scheme, index, pool, party_indices, shamir_msg_id + "p"
+
+        def x_j(x: str, j: int) -> Batched[ShamirVariable]:
+            r"""
+            Helper function to generate a ShamirVariable with label $x_j$, owned
+            by party $j$.
+
+            :param x: label of the variable
+            :param j: index of the party
+            :return: Batched[ShamirVariable] with label $x_j$
+            """
+            return Batched(
+                ShamirVariable(shamir=shamir_scheme, label=f"{x}_{j}", owner=j),
+                batch_size=batch_size,
+            )
+
+        # We store all required Variables in a list to easily merge
+        # communication for these Variables into the same message.
+        group: list[Batched[ShamirVariable]] = []
+
+        # Generate the local additive share of p and q, respectively p_i and q_i
+        p_i = Batched(
+            ShamirVariable(shamir=shamir_scheme, label="p_" + str(index), owner=index),
+            batch_size=batch_size,
         )
-        await cls.gather_shares("p", pool, shares, party_indices, shamir_msg_id + "p")
-        p_sharing = cls.__add_received_shamir_shares("p", shares, index, shamir_scheme)
-        shares.q.additive = cls.generate_prime_additive_share(index, prime_length)
-        cls.shamir_share_and_send(
-            "q", shares, shamir_scheme, index, pool, party_indices, shamir_msg_id + "q"
+        p_i.set_plaintexts(
+            [
+                cls._generate_prime_candidate(index, prime_length)
+                for _ in range(batch_size)
+            ]
         )
-        await cls.gather_shares("q", pool, shares, party_indices, shamir_msg_id + "q")
-        q_sharing = cls.__add_received_shamir_shares("q", shares, index, shamir_scheme)
-        return p_sharing, q_sharing
+        # Generate the local additive share of q, namely q_i
+        q_i = Batched(
+            ShamirVariable(shamir=shamir_scheme, label="q_" + str(index), owner=index),
+            batch_size=batch_size,
+        )
+        q_i.set_plaintexts(
+            [
+                cls._generate_prime_candidate(index, prime_length)
+                for _ in range(batch_size)
+            ]
+        )
+
+        group.append(p_i)
+        group.append(q_i)
+        # Create variables to represent the p_i and q_i of all other parties and
+        # store their shares
+        other_parties = [_ for _ in party_indices.values() if _ != index]
+        group.extend([x_j("p", _) for _ in other_parties])
+        group.extend([x_j("q", _) for _ in other_parties])
+
+        # Create sharings of p_i and q_i to send to other parties
+        p_i.share(index)
+        q_i.share(index)
+
+        # Exchange shares of all p_i
+        # We send over one share of our p_i and q_i to each party
+        # And we receive one share per p_i and q_i of each other party
+        shamir_msg_id = msg_id or f"distributed_keygen_session#{session_id}_shamir"
+        await exchange_shares(group, index, pool, party_indices, msg_id=shamir_msg_id)
+
+        # p = sum(p_i)
+        p_i__s = [v for v in group if v.label.startswith("p_")]
+        p = sum(p_i__s[1:], p_i__s[0])
+        # q = sum(q_i)
+        q_i__s = [v for v in group if v.label.startswith("q_")]
+        q = sum(q_i__s[1:], q_i__s[0])
+
+        # We also return our local additive share of P (p_i)
+        p_additive = [p_i[_].get_plaintext() for _ in range(batch_size)]
+        q_additive = [q_i[_].get_plaintext() for _ in range(batch_size)]
+
+        return p, q, p_additive, q_additive
 
     @classmethod
-    def generate_prime_additive_share(cls, index: int, prime_length: int) -> int:
+    def _generate_prime_candidate(cls, index: int, prime_length: int) -> int:
         r"""
         Generate a random value between $2^(\text{length}-1)$ and 2^\text{length}.
         the function will ensure that the random
@@ -757,53 +854,6 @@ class DistributedPaillier(Paillier, SupportsSerialization):
         return additive_share
 
     @classmethod
-    def shamir_share_and_send(
-        cls,
-        content: str,
-        shares: Shares,
-        shamir_scheme: Shamir,
-        index: int,
-        pool: Pool,
-        party_indices: Dict[str, int],
-        msg_id: Optional[str] = None,
-    ) -> None:
-        """
-        Create a secret-sharing of the input value, and send each share to
-        the corresponding player, together with the label content
-
-        :param content: string identifying the number to be shared and sent
-        :param shares: dictionary keeping track of shares for different parties and numbers
-        :param shamir_scheme: $t$-out-of-$n$ Shamir secret sharing scheme
-        :param index: index of this party
-        :param pool: network of involved parties
-        :param party_indices: mapping from party names to indices
-        :param msg_id: Optional message id.
-        :raise NotImplementedError: In case the given content is not "p" or "q".
-        """
-
-        # retrieve the local additive share for content
-        value = asdict(shares)[content]["additive"]
-
-        # create a shamir sharing of this value
-        value_sharing = shamir_scheme.share_secret(value)
-
-        # Save this player's shamir share of the local additive share
-        if content == "p":
-            shares.p.shares[index] = value_sharing.shares[index]
-        elif content == "q":
-            shares.q.shares[index] = value_sharing.shares[index]
-        else:
-            raise NotImplementedError(
-                f"Don't know what to do with this content: {content}"
-            )
-
-        # Send the other players' shares of the local additive share
-        other_parties = pool.pool_handlers.keys()
-        for party in other_parties:
-            party_share = value_sharing.shares[party_indices[party]]
-            pool.asend(party, {"content": content, "value": party_share}, msg_id=msg_id)
-
-    @classmethod
     def int_shamir_share_and_send(
         cls,
         content: str,
@@ -811,8 +861,8 @@ class DistributedPaillier(Paillier, SupportsSerialization):
         int_shamir_scheme: IntegerShamir,
         index: int,
         pool: Pool,
-        party_indices: Dict[str, int],
-        msg_id: Optional[str] = None,
+        party_indices: dict[str, int],
+        msg_id: str | None = None,
     ) -> None:
         r"""
         Create a secret-sharing of the input value, and send each share to
@@ -850,29 +900,6 @@ class DistributedPaillier(Paillier, SupportsSerialization):
             pool.asend(party, {"content": content, "value": party_share}, msg_id=msg_id)
 
     @classmethod
-    def __add_received_shamir_shares(
-        cls, content: str, shares: Shares, index: int, shamir_scheme: Shamir
-    ) -> ShamirShares:
-        """
-        Fetch shares labeled with content and add them to
-        own_share_value.
-
-        :param content: string identifying the number to be retrieved
-        :param shares: dictionary keeping track of shares for different parties and numbers
-        :param index: index of this party
-        :param shamir_scheme: $t$-out-of-$n$ Shamir secret sharing
-        :return: sum of all the shares for the number identified by content
-        """
-
-        shamir_shares = [
-            ShamirShares(shamir_scheme, {index: v})
-            for k, v in asdict(shares)[content]["shares"].items()
-        ]
-        for i in range(1, len(shamir_shares)):
-            shamir_shares[0] += shamir_shares[i]
-        return shamir_shares[0]
-
-    @classmethod
     def __int_add_received_shares(
         cls,
         content: str,
@@ -898,32 +925,11 @@ class DistributedPaillier(Paillier, SupportsSerialization):
                 corruption_threshold,
                 scaling=math.factorial(int_shamir_scheme.number_of_parties),
             )
-            for k, v in asdict(shares)[content]["shares"].items()
+            for v in asdict(shares)[content]["shares"].values()
         ]
         for i in range(1, len(integer_shares)):
             integer_shares[0] += integer_shares[i]
         return integer_shares[0]
-
-    @classmethod
-    def __mul_received_v_and_check(cls, shares: Shares, modulus: int) -> bool:
-        """
-        Function to test whether a certain primality check holds
-
-        :param shares: dictionary keeping track of shares for a certain value
-        :param modulus: value of $N$
-        :return: true if the biprimality tests succeeds and false if it fails
-        """
-        product = 1
-        for key, value in shares.v.shares.items():
-            if key != 1:
-                product *= value
-        value1 = shares.v.shares[1]
-
-        # The below test determines if N is "probably" the product of two primes (if the
-        # statement is True). Otherwise, N is definitely not the product of two primes.
-        return ((value1 % modulus) == (product % modulus)) or (
-            (value1 % modulus) == (-product % modulus)
-        )
 
     @classmethod
     async def gather_shares(
@@ -931,8 +937,8 @@ class DistributedPaillier(Paillier, SupportsSerialization):
         content: str,
         pool: Pool,
         shares: Shares,
-        party_indices: Dict[str, int],
-        msg_id: Optional[str] = None,
+        party_indices: dict[str, int],
+        msg_id: str | None = None,
     ) -> None:
         r"""
         Gather all shares with label content
@@ -942,34 +948,32 @@ class DistributedPaillier(Paillier, SupportsSerialization):
         :param shares: dictionary keeping track of shares of different parties for certain numbers
         :param party_indices: mapping from party names to indices
         :param msg_id: Optional message id.
-        :raise NotImplementedError: In case the given content is not any of the possible values
+        :raise AttributeError: In case the given content is not any of the possible values
             for which we store shares ("p", "q", "n", "biprime", "lambda\_", "beta", "secret_key").
         """
         shares_from_other_parties = await pool.recv_all(msg_id=msg_id)
         for party, message in shares_from_other_parties:
+            # Check if received content corresponds to the expected content
             msg_content = message["content"]
             err_msg = f"received a share for {msg_content}, but expected {content}"
             assert msg_content == content, err_msg
-            if content == "p":
-                shares.p.shares[party_indices[party]] = message["value"]
-            elif content == "q":
-                shares.q.shares[party_indices[party]] = message["value"]
-            elif content == "n":
-                shares.n.shares[party_indices[party]] = message["value"]
-            elif content == "biprime":
-                shares.biprime.shares[party_indices[party]] = message["value"]
-            elif content == "v":
-                shares.v.shares[party_indices[party]] = message["value"]
-            elif content == "lambda_":
-                shares.lambda_.shares[party_indices[party]] = message["value"]
-            elif content == "beta":
-                shares.beta.shares[party_indices[party]] = message["value"]
-            elif content == "secret_key":
-                shares.secret_key.shares[party_indices[party]] = message["value"]
+
+            # Check that the identifier 'content' exists in the Shares object
+            try:
+                value = getattr(shares, content)
+            except AttributeError as e:
+                err_msg = f"Don't know what to do with this content: {content}"
+                raise AttributeError(err_msg) from e
+
+            if isinstance(value, list):
+                assert isinstance(
+                    message["value"], list
+                ), "The value {content} is stored as a list (to support batching) but the received message is not a list."
+
+                for i, v in enumerate(value):
+                    v.shares[party_indices[party]] = message["value"][i]
             else:
-                raise NotImplementedError(
-                    f"Don't know what to do with this content: {content}"
-                )
+                value.shares[party_indices[party]] = message["value"]
 
     @classmethod
     async def __biprime_test(
@@ -979,81 +983,137 @@ class DistributedPaillier(Paillier, SupportsSerialization):
         modulus: int,
         pool: Pool,
         index: int,
-        party_indices: Dict[str, int],
-        session_id: int,
+        party_indices: dict[str, int],
+        msg_id: str,
     ) -> bool:
-        """
+        r"""
         Function to test for biprimality of $N$
 
-        :param correct_param_biprime: correctness parameter that affects the certainty that the
-            generated modulus is biprime
-        :param shares: dictionary keeping track of shares for different parties for certain numbers
+        To test the biprimality of $N$, we need to successfully perform a certain
+        number of tests (set by 'correct_param_biprime'). All tests need to
+        succeed successively, if any test fails we return False (early return).
+
+        Unfortunately, step 1 of a test is jointly pick a $g$ such that
+        $\operatorname{JacobiSymbol}(g/N)=1$, which is a matter of guessing. So
+        we cannot determine a maximum number of tests which would always
+        suffice.
+
+        We can batch multiple tests in a single communication round to optimize
+        communication at the expesive of wasted computational resources.
+
+        The more tests we perform in a batch, the more likely it is that we can
+        clear a biprime in a single batch. However, the more tests we perform in
+        a batch, the more computational resources we waste because of early
+        returns (e.g. Test 2 returns False).
+
+        :param correct_param_biprime: correctness parameter that affects the
+            certainty that the generated modulus is biprime
+        :param shares: dictionary keeping track of shares for different parties
+            for certain numbers
         :param modulus: the modulus $N$
         :param pool: network of involved parties
         :param index: index of this party
         :param party_indices: mapping from party name to indices
-        :param session_id: The unique session identifier belonging to the protocol that generated
-            the keys for this DistributedPaillier scheme.
+        :param msg_id: Message id.
         :return: true if the test succeeds and false if it fails
         """
-        successfull_biprime_tests = 0
+        successful_biprime_tests = 0
         biprime_test_attempts = 0
-        while successfull_biprime_tests < correct_param_biprime:
-            test_value = secrets.randbelow(modulus)
-            pool.async_broadcast(
-                {"content": "biprime", "value": test_value},
-                msg_id=f"distributed_keygen_session#{session_id}_{biprime_test_attempts}_biprime_test",
+        rounds = 0
+
+        # Every iteration of the while loop is a message.
+        while True:
+            rounds += 1
+            if biprime_test_attempts == 0:
+                # Most candidate modulos will fail within the first five test
+                batch_size = 5
+            else:
+                # If they survived five, we do the rest of the tests
+                batch_size = correct_param_biprime
+
+            # The parties must agree on a random number g
+            # Therefore every party picks a random number and sets it as its local
+            # additive share of g
+            batched_g_sharing = Batched(
+                AdditiveVariable(label="biprime", modulus=modulus),
+                batch_size=batch_size,
             )
-            shares.biprime.shares[index] = test_value
-            await cls.gather_shares(
-                "biprime",
-                pool,
-                shares,
-                party_indices,
-                msg_id=f"distributed_keygen_session#{session_id}_{biprime_test_attempts}_biprime_test",
+            batched_g_sharing.set_share(
+                index,
+                [secrets.randbelow(modulus) for _ in range(batch_size)],
             )
-            biprime_test_attempts += 1
 
-            test_value = 0
-            for value in shares.biprime.shares.values():
-                test_value += value
-            test_value = test_value % modulus
+            # The parties exchange their additive shares of g
+            msg_id = f"{msg_id}_{biprime_test_attempts}"
+            await exchange_reconstruct(
+                batched_g_sharing, index, pool, party_indices, msg_id=f"{msg_id}_g"
+            )
 
-            if sympy.jacobi_symbol(test_value, modulus) == 1:
-                if index == 1:
-                    v_value = int(
-                        pow_mod(
-                            test_value,
-                            (modulus - shares.p.additive - shares.q.additive + 1) // 4,
-                            modulus,
-                        )
+            # We reconstruct by adding the shares modulo N
+            batched_g: list[int] = batched_g_sharing.reconstruct()
+
+            v_values: list[int] = []
+            N = modulus
+            p_i = shares.p.additive
+            q_i = shares.q.additive
+
+            # Every party calculates their value of v_i where i is the index of the
+            # party
+            for g in batched_g:
+                # We check if the Jacobi symbol of g and N is 1
+                is_jacobi_1 = sympy.jacobi_symbol(g, modulus) == 1
+                # The party with index 1 calculates v_1
+                v_one = int(pow_mod(g, (N - p_i - q_i + 1) // 4, N))
+                # The other parties calculate v_i
+                v_other = int(pow_mod(g, (p_i + q_i) // 4, N))
+
+                v = v_one if index == 1 else v_other
+                v_values.append(v if is_jacobi_1 else -1)
+
+            # Though we don't care for the sum of the v_i's, we use the
+            # AdditiveVariable named 'v' to easily exchange the values of v_i
+            batched_v_i = Batched(
+                AdditiveVariable(label="v", modulus=modulus),
+                batch_size=batch_size,
+            )
+            batched_v_i.set_share(index, v_values)
+            await exchange_reconstruct(
+                batched_v_i, index, pool, party_indices, msg_id=f"{msg_id}_v"
+            )
+
+            for v_i in batched_v_i.variables:
+                biprime_test_attempts += 1
+
+                if v_i.get_share(index) == -1:
+                    # The Jacobi symbol was not 1 so we skip this value
+                    continue
+                if successful_biprime_tests >= correct_param_biprime:
+                    logging.debug(
+                        f"Biprime test succeeded! Took {biprime_test_attempts} in {rounds} rounds"
                     )
-                else:
-                    v_value = int(
-                        pow_mod(
-                            test_value,
-                            (shares.p.additive + shares.q.additive) // 4,
-                            modulus,
-                        )
-                    )
-                shares.v.shares[index] = v_value
-                pool.async_broadcast(
-                    {"content": "v", "value": v_value},
-                    msg_id=f"distributed_keygen_session#{session_id}_biprime_v",
-                )
-                await cls.gather_shares(
-                    "v",
-                    pool,
-                    shares,
-                    party_indices,
-                    msg_id=f"distributed_keygen_session#{session_id}_biprime_v",
+                    return True
+
+                # Test whether a primality check holds
+                product = 1
+                sharing = {i: v_i.get_share(i) for i in party_indices.values()}
+                for key, value in sharing.items():
+                    if key != 1:
+                        product *= value
+                value1 = v_i.get_share(1)
+
+                # The below test determines if N is "probably" the product of two primes (if the
+                # statement is True). Otherwise, N is definitely not the product of two primes.
+                success = ((value1 % modulus) == (product % modulus)) or (
+                    (value1 % modulus) == (-product % modulus)
                 )
 
-                if cls.__mul_received_v_and_check(shares, modulus):
-                    successfull_biprime_tests += 1
-                else:
+                if not success:
+                    logging.debug(
+                        f"Biprime test failed! Took {biprime_test_attempts} in {rounds} rounds"
+                    )
                     return False
-        return True
+
+                successful_biprime_tests += 1
 
     @classmethod
     def __generate_lambda_addit_share(
@@ -1076,7 +1136,7 @@ class DistributedPaillier(Paillier, SupportsSerialization):
         return 0 - shares.p.additive - shares.q.additive
 
     @classmethod
-    def __small_prime_divisors_test(cls, prime_list: List[int], modulus: int) -> bool:
+    def __small_prime_divisors_test(cls, prime_list: list[int], modulus: int) -> bool:
         """
         Function to test $N$ for small prime divisors
 
@@ -1096,12 +1156,13 @@ class DistributedPaillier(Paillier, SupportsSerialization):
         zero_share: ShamirShares,
         index: int,
         pool: Pool,
-        prime_list: List[int],
-        party_indices: Dict[str, int],
+        prime_list: list[int],
+        party_indices: dict[str, int],
         prime_length: int,
         shamir_scheme: Shamir,
         correct_param_biprime: int,
         session_id: int,
+        batch_size: int = 1,
     ) -> int:
         r"""
         Function that starts a protocol to generate candidates for $p$ and $q$
@@ -1120,70 +1181,81 @@ class DistributedPaillier(Paillier, SupportsSerialization):
             generated $N$ is a product of two primes
         :param session_id: The unique session identifier belonging to the protocol that generated
             the keys for this DistributedPaillier scheme.
+        :param batch_size: How many $p$'s and $q$'s to generate at once (drastically
+            reduces communication at the expense of potentially wasted computation)
+        :raises RuntimeError: thrown if the protocol is interrupted
         :return: modulus $N$
         """
-
         sp_err_counter = 0
         bip_err_counter = 0
-        bip = False
-        logging.info("Computing N")
-        modulus = 0
-        counter = 0
-        while not bip:
-            counter += 1
 
-            shares.biprime = Shares.Biprime()
-            shares.v = Shares.V()
+        bip = False
+        rounds = 0
+
+        while not bip:
+            rounds += 1
 
             # secreting sharings of p and q
-            p_sharing, q_sharing = await cls.generate_pq(
-                shares,
+            (
+                prime_candidate_p,
+                prime_candidate_q,
+                p_additive,
+                q_additive,
+            ) = await cls._generate_pq(
                 pool,
                 index,
                 prime_length,
                 party_indices,
                 shamir_scheme,
                 session_id,
+                batch_size=batch_size,
+                msg_id=f"distributed_keygen_session#{session_id}_generate_pq_{rounds}",
             )
 
-            # secret sharing of the modulus
-            modulus_sharing = p_sharing * q_sharing
+            candidate_n = prime_candidate_p * prime_candidate_q
 
             # Add 0-share to fix distribution
-            modulus_sharing += zero_share
+            for var in candidate_n.variables:
+                var._sharing += zero_share
 
-            shares.n.shares[index] = modulus_sharing.shares[index]
-            pool.async_broadcast(
-                {"content": "n", "value": modulus_sharing.shares[index]},
-                msg_id=f"distributed_keygen_session#{session_id}_modulus",
+            # Reconstruct n
+            msg_id = f"distributed_keygen_session#{session_id}_n_{rounds}"
+            await exchange_reconstruct(
+                candidate_n, index, pool, party_indices, msg_id=msg_id
             )
-            await cls.gather_shares(
-                "n",
-                pool,
-                shares,
-                party_indices,
-                msg_id=f"distributed_keygen_session#{session_id}_modulus",
-            )
-            modulus_sharing.shares = shares.n.shares
-            modulus = modulus_sharing.reconstruct_secret()
-            if not cls.__small_prime_divisors_test(prime_list, modulus):
-                bip = await cls.__biprime_test(
-                    correct_param_biprime,
-                    shares,
-                    modulus,
-                    pool,
-                    index,
-                    party_indices,
-                    session_id,
-                )
-                if not bip:
-                    bip_err_counter += 1
-            else:
-                sp_err_counter += 1
+            candidate_n_plaintext: list[int] = candidate_n.reconstruct()
 
-        logging.info(f"N = {modulus}")
-        logging.info(f"Failures counter: sp={sp_err_counter} biprime={bip_err_counter}")
-        return modulus
+            for i, n in enumerate(candidate_n_plaintext):
+                # Once we found a modulus that is biprime, we will needs the
+                # shares of p and q to generate the secret key later on
+                shares.p = Shares.P(p_additive[i], prime_candidate_q[i].get_shares())
+                shares.q = Shares.Q(q_additive[i], prime_candidate_q[i].get_shares())
+
+                if not cls.__small_prime_divisors_test(prime_list, n):
+                    bip = await cls.__biprime_test(
+                        correct_param_biprime,
+                        shares,
+                        n,
+                        pool,
+                        index,
+                        party_indices,
+                        msg_id=f"distributed_keygen_session#{session_id}_biprime_test_{rounds}",
+                    )
+                    if not bip:
+                        bip_err_counter += 1
+                    else:
+                        logging.info(f"N = {n}")
+                        logging.info(
+                            f"Checked {sp_err_counter} primes for small prime divisors in {rounds} rounds"
+                        )
+                        logging.info(
+                            f"Checked {bip_err_counter} candidates for biprimality"
+                        )
+                        return n
+                else:
+                    sp_err_counter += 1
+
+        raise RuntimeError("Could not generate a valid modulus")
 
     @classmethod
     async def generate_secret_key(
@@ -1195,12 +1267,13 @@ class DistributedPaillier(Paillier, SupportsSerialization):
         index: int,
         zero_share: ShamirShares,
         pool: Pool,
-        prime_list: List[int],
+        prime_list: list[int],
         prime_length: int,
-        party_indices: Dict[str, int],
+        party_indices: dict[str, int],
         correct_param_biprime: int,
         shamir_scheme: Shamir,
         session_id: int,
+        batch_size: int,
     ) -> PaillierSharedKey:
         """
         Functions that generates the modulus and sets up the sharing of the private key
@@ -1220,8 +1293,11 @@ class DistributedPaillier(Paillier, SupportsSerialization):
         :param shamir_scheme: $t$-out-of-$n$ Shamir secret sharing scheme
         :param session_id: The unique session identifier belonging to the protocol that generated
             the keys for this DistributedPaillier scheme.
+        :param batch_size: How many $p$'s and $q$'s to generate at once (drastically
+            reduces communication at the expense of potentially wasted computation)
         :return: shared secret key
         """
+
         modulus = await cls.compute_modulus(
             shares,
             zero_share,
@@ -1233,6 +1309,7 @@ class DistributedPaillier(Paillier, SupportsSerialization):
             shamir_scheme,
             correct_param_biprime,
             session_id,
+            batch_size,
         )
         int_shamir_scheme = IntegerShamir(
             stat_sec_shamir,
@@ -1319,6 +1396,10 @@ class DistributedPaillier(Paillier, SupportsSerialization):
         return secret_key
 
     class SerializedDistributedPaillier(Paillier.SerializedPaillier, TypedDict):
+        """
+        Serialized DistributedPaillier for use with the communication module.
+        """
+
         session_id: int
         distributed: bool
         index: int
@@ -1346,9 +1427,9 @@ class DistributedPaillier(Paillier, SupportsSerialization):
     def deserialize(
         obj: DistributedPaillier.SerializedDistributedPaillier,
         *,
-        origin: Optional[HTTPClient] = ...,
+        origin: HTTPClient | None = ...,
         **kwargs: Any,
-    ) -> "DistributedPaillier":
+    ) -> DistributedPaillier:
         ...
 
     @overload
@@ -1356,21 +1437,21 @@ class DistributedPaillier(Paillier, SupportsSerialization):
     def deserialize(
         obj: Paillier.SerializedPaillier,
         *,
-        origin: Optional[HTTPClient] = ...,
+        origin: HTTPClient | None = ...,
         **kwargs: Any,
-    ) -> "Paillier":
+    ) -> Paillier:
         ...
 
     @staticmethod
     def deserialize(
-        obj: Union[
-            DistributedPaillier.SerializedDistributedPaillier,
-            Paillier.SerializedPaillier,
-        ],
+        obj: (
+            DistributedPaillier.SerializedDistributedPaillier
+            | Paillier.SerializedPaillier
+        ),
         *,
-        origin: Optional[HTTPClient] = None,
+        origin: HTTPClient | None = None,
         **kwargs: Any,
-    ) -> Union["DistributedPaillier", "Paillier"]:
+    ) -> DistributedPaillier | Paillier:
         r"""
         Deserialization function for Distributed Paillier schemes, which will be passed to
         the communication module

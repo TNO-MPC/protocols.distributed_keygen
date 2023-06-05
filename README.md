@@ -9,7 +9,7 @@ The package tno.mpc.protocols.distributed_keygen is part of the TNO Python Toolb
 
 ## Documentation
 
-Documentation of the tno.mpc.protocols.distributed_keygen package can be found [here](https://docs.mpc.tno.nl/protocols/distributed_keygen/3.1.4).
+Documentation of the tno.mpc.protocols.distributed_keygen package can be found [here](https://docs.mpc.tno.nl/protocols/distributed_keygen/4.0.0).
 
 ## Install
 
@@ -30,12 +30,13 @@ $ python -m pip install 'tno.mpc.protocols.distributed_keygen[gmpy]'
 ```
 
 ## Protocol description
+
 A more elaborate protocol description can be found in [An implementation of the Paillier crypto system with threshold decryption without a trusted dealer](https://eprint.iacr.org/2019/1136.pdf).
 
 ## Usage
 
-The distributed keygen module can be used by first creating a `Pool` 
-from the `tno.mpc.communication` library. 
+The distributed keygen module can be used by first creating a `Pool`
+from the `tno.mpc.communication` library.
 
 ```python
 from tno.mpc.communication.pool import Pool
@@ -44,24 +45,26 @@ pool = Pool(...) # initialize pool with ips etc
 ```
 
 ### Starting the protocol
+
 After initializing a pool, you can use the class method `DistributedPaillier.from_security_parameter()` to create an instance of the `DistributedPaillier` class. The class method automatically starts the protocol between the parties inside the pool to jointly generate a public key and a shared secret key.
 
 Under `Appendix` at the end of this README, you can find 3 files:
+
 - `distributed_keygen_example_local.py`: this script runs the protocol in one python instance on different ports of the same machine.
 - `distributed_keygen_example_distributed.py`: this script runs the protocol for one machine only and this script should be run on each machine.
 - `run_protocol.sh`: this batch script takes one parameter, the number of parties, and starts `distributed_keygen_example_distributed.py` with the right arguments for each machine on `localhost`.
 
 There are a couple of parameters that need to be passed to the class method `DistributedPaillier.from_security_parameter()`. We list them here and provide information on how to choose the right values.
+
 - `pool`: This pool should be initialised for each party (one pool per party). See the documentation for `tno.mpc.communication.pool` for more information.
-- `corruption_threshold`: This is the `t` in `t-out-of-n` secret sharing. The secret sharing is used to distribute the secret key.  We require a dishonest minority, so we require for the
+- `corruption_threshold`: This is the `t` in `t-out-of-n` secret sharing. The secret sharing is used to distribute the secret key. We require a dishonest minority, so we require for the
   number of parties in the pool and the corruption threshold that `number_of_parties >= 2 * corruption_threshold + 1`. The default value is `1`.
-- `key_length`: This is the bit length of the biprime `N` used in the modulus of the scheme. The safety is similar to that of RSA, so typical values are `1024`, `2048` and `4096`. However, this comes at a performance cost. If you simply wish to play around with the code, we recommend using `128`, so the protocol will on average finish in under 1 minute. We stress that this is *NOT* safe and should never be done in production environments. The default value is `2048`.
-- `prime_threshold`: This is an upper bound on the prime values that are checked before the expensive biprimality test is run. A higher value means that bad candidates are discarded faster. The default value is `2000`. 
+- `key_length`: This is the bit length of the biprime `N` used in the modulus of the scheme. The safety is similar to that of RSA, so typical values are `1024`, `2048` and `4096`. However, this comes at a performance cost. If you simply wish to play around with the code, we recommend using `128`, so the protocol will on average finish in under 1 minute. We stress that this is _NOT_ safe and should never be done in production environments. The default value is `2048`.
+- `prime_threshold`: This is an upper bound on the prime values that are checked before the expensive biprimality test is run. A higher value means that bad candidates are discarded faster. The default value is `2000`.
 - `correct_param_biprime`: This parameter determines the certainty level that the produced `N` is indeed the product of 2 primes. The value indicates the number of random values that are sampled and checked. The probability that a check passes, but `N` is not biprime is less than 0.5, so the probability that `N` is not biprime is less than `2**(-correct_param_biprime)`. The default value is `40`.
 - `stat_sec_shamir`: security parameter for the shamir secret sharing over the integers. The higher this parameter, the larger the interval of random masking values will be and the smaller the statistical distance from uniform will be. The default value is `40`.
 - `distributed`: This value determines how the resulting `DistributedPaillier` instance is stored. When the protocol is run within 1 python instance (such as in `distributed_keygen_example_local.py`), this value should be set to `False` and if each party uses their own python instance, this should be set to `True`. The default value is `True`.
 - `precision`: This determines the fixed-point precision of the computations in the resulting encryption scheme. A precision of `n` gives `n` decimals behind the comma of precision.
-
 
 ### After initialization
 
@@ -73,7 +76,7 @@ In the following example we show how to use this library to make computations us
 parties ("party1", "party2", and "party3"). We show the code for all 3 parties and assume that a `distributed_scheme`
 has already been generated by the parties.
 
-Note that in order to decrypt to ciphertext it must be known to all parties. Also, all parties must participate in the
+Note that in order to decrypt, the ciphertext must be known to all parties. Also, all parties must participate in the
 decryption, even in the case that they do not receive any other shares or the result.
 
 _Beware: When sending a ciphertext to more than one party, the method `pool.broadcast()` MUST be used. When using
@@ -177,16 +180,22 @@ Finally, note that some operations issue two warnings, e.g. `c1-c2` issues a war
 The basic usage in the example above can be improved upon by explicitly randomizing as late as possible, i.e. by
 only randomizing non-fresh ciphertexts directly before they are communicated using the `randomize()` method.
 
+### Speed-up encrypting and randomizing
+
+Encrypting messages and randomizing ciphertexts is an involved operation that requires randomly generating large values and processing them in some way. This process can be sped up which will boost the performance of your script or package. The base package `tno.mpc.encryption_schemes.paillier` provides several ways to more quickly generate randomness. We refer to [the documentation of `tno.mpc.encryption_schemes.paillier`](https://ci.tno.nl/gitlab/pet/lab/mpc/python-packages/microlibs/encryption_schemes/microlibs/paillier/-/blob/master/README.md#speed-up-encrypting-and-randomizing) for more information and examples on this part. The information there directly translates to this package.
+
 ## Appendix
 
-*NOTE*: If you want to run `distributed_keygen_example_local.py` in a Jupyter Notebook, you will run into the issue that the event loop is already running upon calling `run_until_complete`.
+_NOTE_: If you want to run `distributed_keygen_example_local.py` in a Jupyter Notebook, you will run into the issue that the event loop is already running upon calling `run_until_complete`.
 In this case, you should add the following code to the top of the notebook:
+
 ```python
 import nest_asyncio
 nest_asyncio.apply()
 ```
 
 distributed_keygen_example_local.py:
+
 ```python
 import asyncio
 from typing import List
@@ -238,7 +247,9 @@ distributed_paillier_schemes = loop.run_until_complete(
 )
 print("The protocol has completed.")
 ```
+
 distributed_keygen_example_distributed.py:
+
 ```python
 import argparse
 import asyncio
@@ -322,7 +333,9 @@ protocol_coroutine = DistributedPaillier.from_security_parameter(
 )
 distributed_paillier_scheme = loop.run_until_complete(protocol_coroutine)
 ```
+
 run_protocol.sh:
+
 ```shell
 #!/bin/bash
 for ((PARTY=0;  PARTY < $1; PARTY++))

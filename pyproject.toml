@@ -1,0 +1,63 @@
+[build-system]
+requires = ["setuptools", "setuptools-scm"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tno.mpc.protocols.distributed_keygen"
+description = "Distributed key generation using Paillier homomorphic encryption"
+readme = "README.md"
+authors = [{name = "TNO MPC Lab", email = "mpclab@tno.nl"}]
+maintainers = [{name = "TNO MPC Lab", email = "mpclab@tno.nl"}]
+keywords = [
+    "TNO",
+    "MPC",
+    "multi-party computation",
+    "encryption schemes",
+    "distributed",
+    "paillier",
+    "cryptosystem",
+    "protocols",
+]
+license = {text = "Apache License, Version 2.0"}
+classifiers = [
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3",
+    "Operating System :: OS Independent",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Information Technology",
+    "Intended Audience :: Science/Research",
+    "Typing :: Typed",
+    "Topic :: Security :: Cryptography",
+]
+urls = {Homepage = "https://mpc.tno.nl/", Documentation = "https://docs.mpc.tno.nl/protocols/distributed_keygen/4.0.0", Source = "https://github.com/TNO-MPC/protocols.distributed_keygen"}
+dynamic = ["version"]
+requires-python = ">=3.7"
+dependencies = [
+    "sympy",
+    "tno.mpc.communication~=4.0",
+    "tno.mpc.encryption_schemes.paillier~=3.0,>=3.0.1",
+    "tno.mpc.encryption_schemes.shamir>=0.1,<2.0",
+    "tno.mpc.encryption_schemes.utils~=0.10",
+    "typing_extensions; python_version<'3.8'",
+]
+
+[project.optional-dependencies]
+gmpy = [
+    "tno.mpc.encryption_schemes.paillier[gmpy]",
+    "tno.mpc.encryption_schemes.shamir[gmpy]",
+    "tno.mpc.encryption_schemes.utils[gmpy]",
+]
+tests = [
+    "pytest",
+    "pytest-asyncio>=0.17",
+]
+
+[tool.setuptools]
+platforms = ["any"]
+
+[tool.setuptools.dynamic]
+version = {attr = "tno.mpc.protocols.distributed_keygen.__version__"}
+
+[tool.setuptools.package-data]
+"*" = ["py.typed"]
+

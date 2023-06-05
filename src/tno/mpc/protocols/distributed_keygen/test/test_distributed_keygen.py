@@ -54,8 +54,11 @@ def fixture_pool_http(
 
 @pytest_asyncio.fixture(
     name="distributed_schemes",
-    params=list(range(2)),
-    ids=["corruption_threshold " + str(i) for i in range(2)],
+    params=list(zip(range(2), [1, 100])),
+    ids=[
+        "corruption_threshold " + str(t) + "_batch_" + str(b)
+        for t, b in list(zip(range(2), [1, 100]))
+    ],
     scope="module",
 )
 async def fixture_distributed_schemes(
@@ -72,7 +75,9 @@ async def fixture_distributed_schemes(
     Serialization.register_class(
         DistributedPaillier, check_annotations=False, overwrite=True
     )
-    corruption_threshold: int = request.param
+    corruption_threshold: int = request.param[0]
+    batch_size: int = request.param[1]
+
     key_length = 64
     prime_threshold = 200
     correct_param_biprime = 20
@@ -89,6 +94,7 @@ async def fixture_distributed_schemes(
                     stat_sec_shamir,
                     distributed=False,
                     precision=8,
+                    batch_size=batch_size,
                 )
                 for pool in pool_http
             ]
@@ -320,6 +326,7 @@ async def test_distributed_paillier_encrypt_decrypt_receivers(
     :param distributed_schemes: a collection of schemes
     :param receivers_id: parties to reveal the decryptions to
     :param result_indices: indices of the parties that should have received the decryptions
+    :raises ValueError: if receivers_id is invalid
     """
     if receivers_id == 0:
         receiver0_list = [["local0"]] * len(distributed_schemes)
@@ -330,6 +337,8 @@ async def test_distributed_paillier_encrypt_decrypt_receivers(
         receivers01_list[0] = ["self", "local1"]
         receivers01_list[1] = ["local0", "self"]
         receivers = tuple(receivers01_list)
+    else:
+        raise ValueError("Invalid receivers_id")
 
     enc = distributed_schemes[0].encrypt(42)
     dec = await asyncio.gather(

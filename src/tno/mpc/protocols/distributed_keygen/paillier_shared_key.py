@@ -2,14 +2,29 @@
 Paillier secret key that is shared amongst several parties.
 """
 
-from typing import Dict
+from __future__ import annotations
 
-from tno.mpc.encryption_schemes.paillier import PaillierCiphertext
+import sys
+from typing import Any
+
+# Check to see if the communication module is available
+try:
+    from tno.mpc.communication import RepetitionError, Serialization
+
+    COMMUNICATION_INSTALLED = True
+except ModuleNotFoundError:
+    COMMUNICATION_INSTALLED = False
+from tno.mpc.encryption_schemes.paillier.paillier import PaillierCiphertext
 from tno.mpc.encryption_schemes.shamir import IntegerShares
-from tno.mpc.encryption_schemes.templates.asymmetric_encryption_scheme import SecretKey
+from tno.mpc.encryption_schemes.templates import SecretKey, SerializationError
 from tno.mpc.encryption_schemes.utils import mod_inv, pow_mod
 
 from .utils import mult_list
+
+if sys.version_info < (3, 8):
+    from typing_extensions import TypedDict
+else:
+    from typing import TypedDict
 
 
 class PaillierSharedKey(SecretKey):
@@ -82,7 +97,7 @@ class PaillierSharedKey(SecretKey):
         partial_decryption = pow_mod(ciphertext_value, exp, self.n_square)
         return partial_decryption
 
-    def decrypt(self, partial_dict: Dict[int, int]) -> int:
+    def decrypt(self, partial_dict: dict[int, int]) -> int:
         r"""
         Function that uses partial decryptions of other parties to reconstruct a
         full decryption of the initial ciphertext.
@@ -116,6 +131,83 @@ class PaillierSharedKey(SecretKey):
 
         return message
 
+    # region Serialization logic
+
+    class SerializedPaillierSharedKey(TypedDict):
+        """
+        Serialized PaillierSharedKey for e.g. storing the key to disk.
+        """
+
+        n: int
+        t: int
+        player_id: int
+        share: IntegerShares
+        theta: int
+
+    def serialize(
+        self, **_kwargs: Any
+    ) -> PaillierSharedKey.SerializedPaillierSharedKey:
+        r"""
+        Serialization function for public keys, which will be passed to the communication module.
+
+        :param \**_kwargs: optional extra keyword arguments
+        :raise SerializationError: When communication library is not installed.
+        :return: serialized version of this PaillierSharedKey.
+        """
+        if not COMMUNICATION_INSTALLED:
+            raise SerializationError()
+        return {
+            "n": self.n,
+            "t": self.t,
+            "player_id": self.player_id,
+            "share": self.share,
+            "theta": self.theta,
+        }
+
+    @staticmethod
+    def deserialize(
+        obj: PaillierSharedKey.SerializedPaillierSharedKey, **_kwargs: Any
+    ) -> PaillierSharedKey:
+        r"""
+        Deserialization function for public keys, which will be passed to the communication module.
+
+        :param obj: serialized version of a PaillierSharedKey.
+        :param \**_kwargs: optional extra keyword arguments
+        :raise SerializationError: When communication library is not installed.
+        :return: Deserialized PaillierSharedKey from the given dict.
+        """
+        if not COMMUNICATION_INSTALLED:
+            raise SerializationError()
+        return PaillierSharedKey(
+            n=obj["n"],
+            t=obj["t"],
+            player_id=obj["player_id"],
+            share=obj["share"],
+            theta=obj["theta"],
+        )
+
+    # endregion
+
+    def __eq__(self, other: object) -> bool:
+        """
+        Compare this PaillierSharedKey with another to determine (in)equality.
+
+        :param other: Object to compare this PaillierSharedKey with.
+        :raise TypeError: When other object is not a PaillierSharedKey.
+        :return: Boolean value representing (in)equality of both objects.
+        """
+        if not isinstance(other, PaillierSharedKey):
+            raise TypeError(
+                f"Expected comparison with another PaillierSharedKey, not {type(other)}"
+            )
+        return (
+            self.share == other.share
+            and self.n == other.n
+            and self.t == other.t
+            and self.player_id == other.player_id
+            and self.theta == other.theta
+        )
+
     def __str__(self) -> str:
         """
         Utility function to represent the local share of the private key as a string.
@@ -133,3 +225,10 @@ class PaillierSharedKey(SecretKey):
                 }
             }
         )
+
+
+if COMMUNICATION_INSTALLED:
+    try:
+        Serialization.register_class(PaillierSharedKey)
+    except RepetitionError:
+        pass

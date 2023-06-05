@@ -18,6 +18,6 @@ contact:
 repository-code: https://github.com/TNO-MPC/protocols.distributed_keygen
 repository-artifact: https://pypi.org/project/tno.mpc.protocols.distributed_keygen
 title: TNO MPC Lab - Protocols - Distributed Keygen
-version: v3.1.4
-date-released: 2022-12-23
+version: v4.0.0
+date-released: 2023-06-05
 
