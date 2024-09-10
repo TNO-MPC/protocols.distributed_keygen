@@ -4,8 +4,7 @@ Paillier secret key that is shared amongst several parties.
 
 from __future__ import annotations
 
-import sys
-from typing import Any
+from typing import Any, TypedDict
 
 # Check to see if the communication module is available
 try:
@@ -14,17 +13,13 @@ try:
     COMMUNICATION_INSTALLED = True
 except ModuleNotFoundError:
     COMMUNICATION_INSTALLED = False
+
 from tno.mpc.encryption_schemes.paillier.paillier import PaillierCiphertext
 from tno.mpc.encryption_schemes.shamir import IntegerShares
 from tno.mpc.encryption_schemes.templates import SecretKey, SerializationError
 from tno.mpc.encryption_schemes.utils import mod_inv, pow_mod
 
-from .utils import mult_list
-
-if sys.version_info < (3, 8):
-    from typing_extensions import TypedDict
-else:
-    from typing import TypedDict
+from tno.mpc.protocols.distributed_keygen.utils import mult_list
 
 
 class PaillierSharedKey(SecretKey):

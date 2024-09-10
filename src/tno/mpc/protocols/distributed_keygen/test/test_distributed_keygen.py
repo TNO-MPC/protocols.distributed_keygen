@@ -2,105 +2,19 @@
 Tests that can be run using pytest to test the distributed keygen functionality
 """
 
+from __future__ import annotations
+
 import asyncio
 import math
-from typing import Any, AsyncGenerator, List, Tuple, Type, Union
+from typing import Any, Sequence
 
 import pytest
-import pytest_asyncio
-from _pytest.fixtures import FixtureRequest
 
-from tno.mpc.communication import Pool, Serialization
-from tno.mpc.communication.test import event_loop  # pylint: disable=unused-import
-from tno.mpc.communication.test.pool_fixtures_http import (  # pylint: disable=unused-import
-    fixture_pool_http_3p,
-    fixture_pool_http_4p,
-    fixture_pool_http_5p,
-)
+from tno.mpc.communication import Pool
+from tno.mpc.encryption_schemes.paillier import PaillierCiphertext
+from tno.mpc.encryption_schemes.paillier.paillier import Plaintext
 
 from tno.mpc.protocols.distributed_keygen import DistributedPaillier
-
-
-@pytest.fixture(
-    name="pool_http",
-    params=[3, 4, 5],
-    ids=["3-party", "4-party", "5-party"],
-    scope="module",
-)
-def fixture_pool_http(
-    request: FixtureRequest,
-    pool_http_3p: AsyncGenerator[Tuple[Pool, ...], None],
-    pool_http_4p: AsyncGenerator[Tuple[Pool, ...], None],
-    pool_http_5p: AsyncGenerator[Tuple[Pool, ...], None],
-) -> AsyncGenerator[Tuple[Pool, ...], None]:
-    """
-    Creates a collection of 3, 4 and 5 communication pools
-
-    :param pool_http_3p: Pool of 3 HTTP clients.
-    :param pool_http_4p: Pool of 4 HTTP clients.
-    :param pool_http_5p: Pool of 5 HTTP clients.
-    :param request: A fixture request used to indirectly parametrize.
-    :raise NotImplementedError: raised when based on the given param, no fixture can be created
-    :return: a collection of communication pools
-    """
-    if request.param == 3:
-        return pool_http_3p
-    if request.param == 4:
-        return pool_http_4p
-    if request.param == 5:
-        return pool_http_5p
-    raise NotImplementedError("This has not been implemented")
-
-
-@pytest_asyncio.fixture(
-    name="distributed_schemes",
-    params=list(zip(range(2), [1, 100])),
-    ids=[
-        "corruption_threshold " + str(t) + "_batch_" + str(b)
-        for t, b in list(zip(range(2), [1, 100]))
-    ],
-    scope="module",
-)
-async def fixture_distributed_schemes(
-    pool_http: Tuple[Pool, ...],
-    request: FixtureRequest,
-) -> Tuple[DistributedPaillier, ...]:
-    """
-    Constructs schemes to use for distributed key generation.
-
-    :param pool_http: collection of communication pools
-    :param request: Fixture request
-    :return: a collection of schemes
-    """
-    Serialization.register_class(
-        DistributedPaillier, check_annotations=False, overwrite=True
-    )
-    corruption_threshold: int = request.param[0]
-    batch_size: int = request.param[1]
-
-    key_length = 64
-    prime_threshold = 200
-    correct_param_biprime = 20
-    stat_sec_shamir = 20
-    distributed_schemes: Tuple[DistributedPaillier, ...] = tuple(
-        await asyncio.gather(
-            *[
-                DistributedPaillier.from_security_parameter(
-                    pool,
-                    corruption_threshold,
-                    key_length,
-                    prime_threshold,
-                    correct_param_biprime,
-                    stat_sec_shamir,
-                    distributed=False,
-                    precision=8,
-                    batch_size=batch_size,
-                )
-                for pool in pool_http
-            ]
-        )
-    )
-    return distributed_schemes
 
 
 @pytest.mark.parametrize(
@@ -108,8 +22,8 @@ async def fixture_distributed_schemes(
 )
 @pytest.mark.asyncio
 async def test_distributed_paillier_with_communication(
-    distributed_schemes: Tuple[DistributedPaillier, ...],
-    plaintext: Union[float, int],
+    distributed_schemes: tuple[DistributedPaillier, ...],
+    plaintext: float | int,
 ) -> None:
     """
     Tests distributed encryption and decryption using communication
@@ -139,8 +53,8 @@ async def test_distributed_paillier_with_communication(
 )
 @pytest.mark.asyncio
 async def test_distributed_paillier_serialization(
-    distributed_schemes: Tuple[DistributedPaillier, ...],
-    plaintext: Union[float, int],
+    distributed_schemes: tuple[DistributedPaillier, ...],
+    plaintext: float | int,
 ) -> None:
     """
     Tests serialization of the distributed Paillier.
@@ -165,7 +79,7 @@ async def test_distributed_paillier_serialization(
 
 
 @pytest.mark.asyncio
-async def test_distributed_paillier_exception(pool_http: Tuple[Pool, ...]) -> None:
+async def test_distributed_paillier_exception(pool_http: tuple[Pool, ...]) -> None:
     """
     Tests raising of exception when corruption threshold is set incorrectly.
 
@@ -199,8 +113,8 @@ async def test_distributed_paillier_exception(pool_http: Tuple[Pool, ...]) -> No
 )
 @pytest.mark.asyncio
 async def test_distributed_paillier_encrypt_decrypt(
-    distributed_schemes: Tuple[DistributedPaillier, ...],
-    plaintext: Union[float, int],
+    distributed_schemes: tuple[DistributedPaillier, ...],
+    plaintext: float | int,
 ) -> None:
     """
     Tests distributed encryption and decryption
@@ -220,8 +134,8 @@ async def test_distributed_paillier_encrypt_decrypt(
 )
 @pytest.mark.asyncio
 async def test_distributed_paillier_encrypt_decrypt_parallel(
-    distributed_schemes: Tuple[DistributedPaillier, ...],
-    plaintext: Union[float, int],
+    distributed_schemes: tuple[DistributedPaillier, ...],
+    plaintext: float | int,
 ) -> None:
     """
     Tests distributed encryption and decryption in parallel
@@ -246,7 +160,7 @@ async def test_distributed_paillier_encrypt_decrypt_parallel(
 
 @pytest.mark.asyncio
 async def test_distributed_paillier_encrypt_decrypt_sequence(
-    distributed_schemes: Tuple[DistributedPaillier, ...],
+    distributed_schemes: tuple[DistributedPaillier, ...],
 ) -> None:
     """
     Tests distributed sequence decryption
@@ -266,20 +180,21 @@ async def test_distributed_paillier_encrypt_decrypt_sequence(
     )
 
     for decryption_list in decryptions:
+        assert decryption_list is not None
         for idx, decryption in enumerate(decryption_list):
             assert plaintexts[idx] == decryption
 
 
 @pytest.mark.asyncio
 async def test_distributed_paillier_encrypt_decrypt_sequence_parallel(
-    distributed_schemes: Tuple[DistributedPaillier, ...],
+    distributed_schemes: tuple[DistributedPaillier, ...],
 ) -> None:
     """
     Tests distributed sequence decryption when run in parallel
 
     :param distributed_schemes: a collection of schemes
     """
-    plaintexts_list: List[Union[List[float], List[int]]] = [
+    plaintexts_list: list[list[float] | list[int]] = [
         [1, 2, 3],
         [-1, -2, -3],
         [1.5, 42.42424242, -1.5 - 42.42424242],
@@ -290,11 +205,19 @@ async def test_distributed_paillier_encrypt_decrypt_sequence_parallel(
             [distributed_schemes[0].encrypt(plaintext) for plaintext in plaintext_list]
         )
 
-    decryption_lists: List[List[Union[List[float], List[int]]]] = await asyncio.gather(
+    async def safe_decrypt_sequence(
+        distributed_scheme: DistributedPaillier,
+        ciphertexts: Sequence[PaillierCiphertext],
+    ) -> list[Plaintext]:
+        decryption = await distributed_scheme.decrypt_sequence(ciphertexts)
+        assert decryption is not None, "Decryption result should not be None"
+        return decryption
+
+    decryption_lists: list[list[list[Plaintext]]] = await asyncio.gather(
         *[
             asyncio.gather(
                 *[
-                    distributed_schemes[i].decrypt_sequence(ciphertexts)
+                    safe_decrypt_sequence(distributed_schemes[i], ciphertexts)
                     for i in range(len(distributed_schemes))
                 ]
             )
@@ -316,9 +239,9 @@ async def test_distributed_paillier_encrypt_decrypt_sequence_parallel(
 )
 @pytest.mark.asyncio
 async def test_distributed_paillier_encrypt_decrypt_receivers(
-    distributed_schemes: Tuple[DistributedPaillier, ...],
+    distributed_schemes: tuple[DistributedPaillier, ...],
     receivers_id: int,
-    result_indices: Tuple[int],
+    result_indices: tuple[int],
 ) -> None:
     """
     Tests distributed decryption revealing the results to a subset of receivers only.
@@ -364,8 +287,8 @@ async def test_distributed_paillier_encrypt_decrypt_receivers(
 )
 @pytest.mark.asyncio
 async def test_pool_broadcast_collection(
-    distributed_schemes: Tuple[DistributedPaillier, ...],
-    collection_type: Type[Any],
+    distributed_schemes: tuple[DistributedPaillier, ...],
+    collection_type: type[Any],
 ) -> None:
     """
     Test whether sending of collections of ciphertexts using the broadcast method works as expected.

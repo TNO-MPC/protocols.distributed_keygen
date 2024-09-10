@@ -1,30 +1,47 @@
-# TNO MPC Lab - Protocols - Distributed Keygen
+# TNO PET Lab - secure Multi-Party Computation (MPC) - Protocols - Distributed Key Generation
 
-The TNO MPC lab consists of generic software components, procedures, and functionalities developed and maintained on a regular basis to facilitate and aid in the development of MPC solutions. The lab is a cross-project initiative allowing us to integrate and reuse previously developed MPC functionalities to boost the development of new protocols and solutions.
+An implementation of a semi-honest distributed key generation for the Paillier
+Encryption Scheme, resulting in a public key and a shared secret key. A detailed
+description of the protocol can be found in the accompanying paper: [An
+implementation of the Paillier crypto system with threshold decryption without
+a trusted dealer](https://eprint.iacr.org/2019/1136.pdf).
 
-The package tno.mpc.protocols.distributed_keygen is part of the TNO Python Toolbox.
+### PET Lab
 
-*Limitations in (end-)use: the content of this software package may solely be used for applications that comply with international export control laws.*  
-*This implementation of cryptographic software has not been audited. Use at your own risk.*
+The TNO PET Lab consists of generic software components, procedures, and functionalities developed and maintained on a regular basis to facilitate and aid in the development of PET solutions. The lab is a cross-project initiative allowing us to integrate and reuse previously developed PET functionalities to boost the development of new protocols and solutions.
+
+The package `tno.mpc.protocols.distributed_keygen` is part of the [TNO Python Toolbox](https://github.com/TNO-PET).
+
+_Limitations in (end-)use: the content of this software package may solely be used for applications that comply with international export control laws._  
+_This implementation of cryptographic software has not been audited. Use at your own risk._
 
 ## Documentation
 
-Documentation of the tno.mpc.protocols.distributed_keygen package can be found [here](https://docs.mpc.tno.nl/protocols/distributed_keygen/4.0.0).
+Documentation of the `tno.mpc.protocols.distributed_keygen` package can be found
+[here](https://docs.pet.tno.nl/mpc/protocols/distributed_keygen/4.2.2).
 
 ## Install
 
-Easily install the tno.mpc.protocols.distributed_keygen package using pip:
+Easily install the `tno.mpc.protocols.distributed_keygen` package using `pip`:
+
 ```console
 $ python -m pip install tno.mpc.protocols.distributed_keygen
 ```
 
+_Note:_ If you are cloning the repository and wish to edit the source code, be
+sure to install the package in editable mode:
+
+```console
+$ python -m pip install -e 'tno.mpc.protocols.distributed_keygen'
+```
+
 If you wish to run the tests you can use:
+
 ```console
 $ python -m pip install 'tno.mpc.protocols.distributed_keygen[tests]'
 ```
+_Note:_ A significant performance improvement can be achieved by installing the GMPY2 library.
 
-### Note:
-A significant performance improvement can be achieved by installing the GMPY2 library.
 ```console
 $ python -m pip install 'tno.mpc.protocols.distributed_keygen[gmpy]'
 ```
@@ -184,6 +201,16 @@ only randomizing non-fresh ciphertexts directly before they are communicated usi
 
 Encrypting messages and randomizing ciphertexts is an involved operation that requires randomly generating large values and processing them in some way. This process can be sped up which will boost the performance of your script or package. The base package `tno.mpc.encryption_schemes.paillier` provides several ways to more quickly generate randomness. We refer to [the documentation of `tno.mpc.encryption_schemes.paillier`](https://ci.tno.nl/gitlab/pet/lab/mpc/python-packages/microlibs/encryption_schemes/microlibs/paillier/-/blob/master/README.md#speed-up-encrypting-and-randomizing) for more information and examples on this part. The information there directly translates to this package.
 
+## Benchmarks
+
+The repository includes a benchmark script which generates the graphs as they appear in the paper: [An implementation of the Paillier crypto system with threshold decryption without a trusted dealer](https://eprint.iacr.org/2019/1136.pdf).
+
+To use the script, first install the "bench" dependency group:
+- `python -m pip install ".[bench]"`
+
+For information on how to use the script, type:
+- `python ./scripts/bench_batch_size.py --help`
+
 ## Appendix
 
 _NOTE_: If you want to run `distributed_keygen_example_local.py` in a Jupyter Notebook, you will run into the issue that the event loop is already running upon calling `run_until_complete`.
@@ -338,6 +365,21 @@ run_protocol.sh:
 
 ```shell
 #!/bin/bash
+#
+# This is a helper script to run the distributed version of the keygen example
+# on localhost. This means that for each party, a seperate process is started
+# on the same machine.
+#
+# Usage: ./run_protocol.sh NUMBER_OF_PARTIES
+#
+# Arguments:
+# NUMBER_OF_PARTIES    The total number of parties to initialize. This should be an integer greater than 0.
+#
+# Example:
+# To run the distributed keygen with 5 parties, use the script as follows:
+# ./run_protocol.sh 5
+#
+
 for ((PARTY=0;  PARTY < $1; PARTY++))
 do
   echo "Initializing party $PARTY"

@@ -1,0 +1,2 @@
+‚¦object†§pub_key‚¤type±PaillierPublicKey¤data‚¡n‚¤type£int¤dataÄ	)‘w 0)(“¡g‚¤type£int¤dataÄ	*‘w 0)(“¨priv_key‚¤type±PaillierSharedKey¤data…¡n‚¤type£int¤dataÄ	)‘w 0)(“¡t©player_id¥share‚¤type­IntegerShares¤data„¦scheme„¥kappa±number_of_parties±polynomial_degree§max_int‚¤type£int¤dataÄ	)‘w 0)(“¦shares‚¤type£int¤dataÄ\‰ó¶K½#jx¨Ÿ÷‹CÆ¤-ÆÆk6ø¦degree§scaling$¥theta‚¤type£int¤dataÄ	µ`u>
+ú©precision¥index­party_indicesƒ¦local0¦local2¤self´corruption_threshold¢id 

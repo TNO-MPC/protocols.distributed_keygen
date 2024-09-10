@@ -2,11 +2,13 @@
 Useful functions for the distributed keygen module.
 """
 
+from __future__ import annotations
+
 import operator
 import sys
 from collections import Counter
 from dataclasses import dataclass, field
-from typing import Any, Dict, Generic, List, Optional, TypeVar
+from typing import Any, Generic, Iterator, Sequence, TypeVar
 
 from tno.mpc.communication import Pool
 from tno.mpc.encryption_schemes.shamir import ShamirSecretSharingScheme as Shamir
@@ -18,7 +20,7 @@ else:
     from typing_extensions import override
 
 
-def mult_list(list_: List[int], modulus: Optional[int] = None) -> int:
+def mult_list(list_: list[int], modulus: int | None = None) -> int:
     """
     Utility function to multiply a list of numbers in a modular group
 
@@ -277,8 +279,7 @@ class ShamirVariable(Variable):
         :raise ValueError: if there is no share for party index
         :return: the share of party index
         """
-        share = self._sharing.shares.get(index)
-        if share is None:
+        if (share := self._sharing.shares.get(index)) is None:
             raise ValueError(
                 f"There is no share for party {index} of variable {self.label}"
             )
@@ -288,7 +289,7 @@ class ShamirVariable(Variable):
     def set_share(self, index: int, share: Any) -> None:
         self._sharing.shares[index] = share
 
-    def get_shares(self) -> Dict[int, int]:
+    def get_shares(self) -> dict[int, int]:
         """
         Return all shares of this variable.
 
@@ -305,7 +306,7 @@ class AdditiveVariable(Variable):
     def __init__(self, label: str, modulus: int, owner: int = -1) -> None:
         super().__init__(label, owner)
         self._modulus = modulus
-        self._sharing: Dict[int, int] = {}
+        self._sharing: dict[int, int] = {}
 
         self._index: int = -1  # Stored on .share(), used in __add__ and __mul__
 
@@ -397,7 +398,7 @@ class Batched(Generic[V], Variable):
     one were using a single variable.
     """
 
-    variables: List[V]
+    variables: list[V]
     batch_size: int
 
     def __init__(self, var: V, batch_size: int) -> None:
@@ -414,13 +415,13 @@ class Batched(Generic[V], Variable):
         """
         Variable.__init__(self, var.label, var.owner)
 
-        self.variables: List[V] = [var.clone() for _ in range(batch_size)]
+        self.variables: list[V] = [var.clone() for _ in range(batch_size)]
         self.batch_size = batch_size
 
     def set_plaintext(self, value: int) -> None:
         raise NotImplementedError("Please use set_plaintexts instead.")
 
-    def set_plaintexts(self, values: List[int]) -> None:
+    def set_plaintexts(self, values: list[int]) -> None:
         """
         Set the value of all variables in the batch. Each variable is set individually.
 
@@ -475,7 +476,7 @@ class Batched(Generic[V], Variable):
             self.variables[i].share(index)
 
     @override
-    def get_share(self, index: int) -> List[Any]:
+    def get_share(self, index: int) -> list[Any]:
         """
         Return the share of party index.
 
@@ -499,9 +500,12 @@ class Batched(Generic[V], Variable):
         """
         return self.variables[index]
 
+    def __iter__(self) -> Iterator[V]:
+        return iter(self.variables)
+
 
 async def exchange_shares(
-    group: List[V], index: int, pool: Pool, party_indices: Dict[str, int], msg_id: str
+    group: list[V], index: int, pool: Pool, party_indices: dict[str, int], msg_id: str
 ) -> None:
     """
     All parties send, for the variables in the group they own, to the other
@@ -517,12 +521,12 @@ async def exchange_shares(
     :param msg_id: Optional message id.
     :raises ValueError: if a variable is received with an unknown label
     """
-    group_dict: Dict[str, V] = {v.label: v for v in group}
+    group_dict: dict[str, V] = {v.label: v for v in group}
 
     # Send shares to other parties for the variables we own within the group
     other_parties = pool.pool_handlers.keys()
     for party in other_parties:
-        message: Dict[str, List[Dict[str, str]]] = {"value": []}
+        message: dict[str, list[dict[str, str]]] = {"value": []}
 
         # Add all variables in the group that are owned by this party to the message
         for label, variable in group_dict.items():
@@ -550,34 +554,42 @@ async def exchange_shares(
 
 
 async def exchange_reconstruct(
-    var: Variable, index: int, pool: Pool, party_indices: Dict[str, int], msg_id: str
+    variables: Variable | Sequence[Variable],
+    index: int,
+    pool: Pool,
+    party_indices: dict[str, int],
+    msg_id: str,
 ) -> None:
     """
     Exchange shares of this variable with the other parties in the pool to
     allow all parties to locally reconstruct the variable.
 
-    :param var: variable to exchange shares for
+    :param variables: variable to exchange shares for
     :param index: index of this party
     :param pool: network of involved parties
     :param party_indices: mapping from party names to indices
     :param msg_id: Optional message id.
     """
+    if isinstance(variables, Variable):
+        variables = [variables]
 
     # Message containing our share of the secret
-    message = {
-        "label": var.label,
-        "value": var.get_share(index),
-    }
+    message = [
+        {
+            "label": var.label,
+            "value": var.get_share(index),
+        }
+        for var in variables
+    ]
 
     # Send our share to all other parties
-    other_parties = pool.pool_handlers.keys()
-    for party in other_parties:
-        pool.asend(party, message, msg_id=msg_id)
+    pool.async_broadcast(message, msg_id)
 
     # Gather the shares of the other parties
     messages = await pool.recv_all(msg_id=msg_id)
     for party, message in messages:
-        var.set_share(party_indices[party], message["value"])
+        for i, share in enumerate(message):
+            variables[i].set_share(party_indices[party], share["value"])
 
 
 @dataclass
@@ -598,39 +610,44 @@ class Shares:
         r"""
         Shares of $p$.
         """
+
         additive: int = 0
-        shares: Dict[int, int] = field(default_factory=dict)
+        shares: dict[int, int] = field(default_factory=dict)
 
     @dataclass
     class Q:
         r"""
         Shares of $q$.
         """
+
         additive: int = 0
-        shares: Dict[int, int] = field(default_factory=dict)
+        shares: dict[int, int] = field(default_factory=dict)
 
     @dataclass
     class N:
         r"""
         Shares of $n$.
         """
-        shares: Dict[int, int] = field(default_factory=dict)
+
+        shares: dict[int, int] = field(default_factory=dict)
 
     @dataclass
     class Lambda:
         r"""
         Shares of $\lambda$.
         """
+
         additive: int = 0
-        shares: Dict[int, int] = field(default_factory=dict)
+        shares: dict[int, int] = field(default_factory=dict)
 
     @dataclass
     class Beta:
         r"""
         Shares of $\beta$.
         """
+
         additive: int = 0
-        shares: Dict[int, int] = field(default_factory=dict)
+        shares: dict[int, int] = field(default_factory=dict)
 
     @dataclass
     class SecretKey:
@@ -639,11 +656,11 @@ class Shares:
         """
 
         additive: int = 0
-        shares: Dict[int, int] = field(default_factory=dict)
+        shares: dict[int, int] = field(default_factory=dict)
 
-    p: "Shares.P" = field(default_factory=P)
-    q: "Shares.Q" = field(default_factory=Q)
+    p: Shares.P = field(default_factory=P)
+    q: Shares.Q = field(default_factory=Q)
 
-    lambda_: "Shares.Lambda" = field(default_factory=Lambda)
-    beta: "Shares.Beta" = field(default_factory=Beta)
-    secret_key: "Shares.SecretKey" = field(default_factory=SecretKey)
+    lambda_: Shares.Lambda = field(default_factory=Lambda)
+    beta: Shares.Beta = field(default_factory=Beta)
+    secret_key: Shares.SecretKey = field(default_factory=SecretKey)

@@ -6,8 +6,8 @@ build-backend = "setuptools.build_meta"
 name = "tno.mpc.protocols.distributed_keygen"
 description = "Distributed key generation using Paillier homomorphic encryption"
 readme = "README.md"
-authors = [{name = "TNO MPC Lab", email = "mpclab@tno.nl"}]
-maintainers = [{name = "TNO MPC Lab", email = "mpclab@tno.nl"}]
+authors = [{ name = "TNO PET Lab", email = "petlab@tno.nl" }]
+maintainers = [{ name = "TNO PET Lab", email = "petlab@tno.nl" }]
 keywords = [
     "TNO",
     "MPC",
@@ -18,7 +18,7 @@ keywords = [
     "cryptosystem",
     "protocols",
 ]
-license = {text = "Apache License, Version 2.0"}
+license = { text = "Apache License, Version 2.0" }
 classifiers = [
     "License :: OSI Approved :: Apache Software License",
     "Programming Language :: Python :: 3",
@@ -29,16 +29,16 @@ classifiers = [
     "Typing :: Typed",
     "Topic :: Security :: Cryptography",
 ]
-urls = {Homepage = "https://mpc.tno.nl/", Documentation = "https://docs.mpc.tno.nl/protocols/distributed_keygen/4.0.0", Source = "https://github.com/TNO-MPC/protocols.distributed_keygen"}
+urls = { Homepage = "https://pet.tno.nl/", Documentation = "https://docs.pet.tno.nl/mpc/protocols/distributed_keygen/4.2.2", Source = "https://github.com/TNO-MPC/protocols.distributed_keygen" }
 dynamic = ["version"]
-requires-python = ">=3.7"
+requires-python = ">=3.8"
 dependencies = [
     "sympy",
-    "tno.mpc.communication~=4.0",
+    "tno.mpc.communication~=4.8",
     "tno.mpc.encryption_schemes.paillier~=3.0,>=3.0.1",
-    "tno.mpc.encryption_schemes.shamir>=0.1,<2.0",
+    "tno.mpc.encryption_schemes.shamir>=1.3.0,<2.0",
     "tno.mpc.encryption_schemes.utils~=0.10",
-    "typing_extensions; python_version<'3.8'",
+    "typing_extensions; python_version<'3.12'",
 ]
 
 [project.optional-dependencies]
@@ -51,6 +51,14 @@ tests = [
     "pytest",
     "pytest-asyncio>=0.17",
 ]
+bench = [
+    "numpy",
+    "matplotlib",
+    "pandas",
+    "seaborn",
+    "tqdm",
+    "tikzplotlib"
+]
 
 [tool.setuptools]
 platforms = ["any"]
@@ -60,4 +68,55 @@ version = {attr = "tno.mpc.protocols.distributed_keygen.__version__"}
 
 [tool.setuptools.package-data]
 "*" = ["py.typed"]
+"tno.mpc.protocols.distributed_keygen" = ["test/test_data/*.obj"]
 
+[tool.coverage.run]
+branch = true
+omit = ["*/test/*"]
+
+[tool.coverage.report]
+precision = 2
+show_missing = true
+
+[tool.isort]
+profile = "black"
+known_tno = "tno"
+known_first_party = "tno.mpc.protocols.distributed_keygen"
+sections = "FUTURE,STDLIB,THIRDPARTY,TNO,FIRSTPARTY,LOCALFOLDER"
+no_lines_before = "LOCALFOLDER"
+
+[tool.pytest.ini_options]
+addopts = "--fixture-pool-scope package"
+
+[tool.mypy]
+mypy_path = "src,stubs"
+strict = true
+show_error_context = true
+namespace_packages = true
+explicit_package_bases = true
+
+[tool.tbump.version]
+current = "4.2.2"
+regex = '''
+\d+\.\d+\.\d+(-(.*))?
+'''
+
+[tool.tbump.git]
+message_template = "Bump to {new_version}"
+tag_template = "v{new_version}"
+
+    [[tool.tbump.file]]
+    src = "pyproject.toml"
+    search = "current = \"{current_version}\""
+
+    [[tool.tbump.file]]
+    src = "src/tno/mpc/protocols/distributed_keygen/__init__.py"
+    search = "__version__ = \"{current_version}\""
+
+    [[tool.tbump.file]]
+    src = "CITATION.cff"
+    search = "version: {current_version}"
+
+    [[tool.tbump.file]]
+    src = "README.md"
+    search = '\[here\]\(https:\/\/docs.pet.tno.nl/[^\.]*\/{current_version}'
