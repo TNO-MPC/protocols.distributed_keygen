@@ -18,7 +18,7 @@ _This implementation of cryptographic software has not been audited. Use at your
 ## Documentation
 
 Documentation of the `tno.mpc.protocols.distributed_keygen` package can be found
-[here](https://docs.pet.tno.nl/mpc/protocols/distributed_keygen/4.2.2).
+[here](https://docs.pet.tno.nl/mpc/protocols/distributed_keygen/4.3.0).
 
 ## Install
 
@@ -40,6 +40,7 @@ If you wish to run the tests you can use:
 ```console
 $ python -m pip install 'tno.mpc.protocols.distributed_keygen[tests]'
 ```
+
 _Note:_ A significant performance improvement can be achieved by installing the GMPY2 library.
 
 ```console
@@ -206,9 +207,11 @@ Encrypting messages and randomizing ciphertexts is an involved operation that re
 The repository includes a benchmark script which generates the graphs as they appear in the paper: [An implementation of the Paillier crypto system with threshold decryption without a trusted dealer](https://eprint.iacr.org/2019/1136.pdf).
 
 To use the script, first install the "bench" dependency group:
+
 - `python -m pip install ".[bench]"`
 
 For information on how to use the script, type:
+
 - `python ./scripts/bench_batch_size.py --help`
 
 ## Appendix

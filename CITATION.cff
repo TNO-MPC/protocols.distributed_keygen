@@ -18,5 +18,5 @@ contact:
 repository-code: https://github.com/TNO-MPC/protocols.distributed_keygen
 repository-artifact: https://pypi.org/project/tno.mpc.protocols.distributed_keygen
 title: TNO PET Lab - secure Multi-Party Computation (MPC) - Protocols - Distributed Key Generation
-version: 4.2.2
-date-released: 2024-11-29
+version: 4.3.0
+date-released: 2024-12-10

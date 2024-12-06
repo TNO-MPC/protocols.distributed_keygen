@@ -12,4 +12,4 @@ from tno.mpc.protocols.distributed_keygen.paillier_shared_key import (
     PaillierSharedKey as PaillierSharedKey,
 )
 
-__version__ = "4.2.2"
+__version__ = "4.3.0"

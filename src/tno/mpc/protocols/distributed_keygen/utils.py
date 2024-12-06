@@ -7,8 +7,9 @@ from __future__ import annotations
 import operator
 import sys
 from collections import Counter
+from collections.abc import Iterator, Sequence
 from dataclasses import dataclass, field
-from typing import Any, Generic, Iterator, Sequence, TypeVar
+from typing import Any, Generic, TypeVar
 
 from tno.mpc.communication import Pool
 from tno.mpc.encryption_schemes.shamir import ShamirSecretSharingScheme as Shamir

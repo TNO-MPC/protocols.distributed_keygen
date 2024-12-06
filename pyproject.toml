@@ -29,9 +29,9 @@ classifiers = [
     "Typing :: Typed",
     "Topic :: Security :: Cryptography",
 ]
-urls = { Homepage = "https://pet.tno.nl/", Documentation = "https://docs.pet.tno.nl/mpc/protocols/distributed_keygen/4.2.2", Source = "https://github.com/TNO-MPC/protocols.distributed_keygen" }
+urls = { Homepage = "https://pet.tno.nl/", Documentation = "https://docs.pet.tno.nl/mpc/protocols/distributed_keygen/4.3.0", Source = "https://github.com/TNO-MPC/protocols.distributed_keygen" }
 dynamic = ["version"]
-requires-python = ">=3.8"
+requires-python = ">=3.9"
 dependencies = [
     "sympy",
     "tno.mpc.communication~=4.8",
@@ -96,7 +96,7 @@ namespace_packages = true
 explicit_package_bases = true
 
 [tool.tbump.version]
-current = "4.2.2"
+current = "4.3.0"
 regex = '''
 \d+\.\d+\.\d+(-(.*))?
 '''

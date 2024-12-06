@@ -9,9 +9,10 @@ import logging
 import math
 import secrets
 import warnings
+from collections.abc import Iterable
 from dataclasses import asdict
 from random import randint
-from typing import Any, Iterable, TypedDict, cast, overload
+from typing import Any, TypedDict, cast, overload
 
 # ormsgpack dependency already included by the communication package
 import ormsgpack as ormsgpack
@@ -365,8 +366,9 @@ class DistributedPaillier(Paillier, SupportsSerialization):
 
         if self_receive:
             # receive the partial decryption from the other parties
-            other_partial_decryption_shares: tuple[tuple[str, dict[str, Any]]] = (
-                await self.pool.recv_all(msg_id=message_id)
+            other_partial_decryption_shares = cast(
+                list[tuple[str, dict[str, Any]]],
+                (await self.pool.recv_all(msg_id=message_id)),
             )
             for party, message in other_partial_decryption_shares:
                 msg_content = message["content"]
